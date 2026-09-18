@@ -148,9 +148,10 @@ function App() {
 
   useEffect(() => {
     setGitStatus(null)
+    if (!workspaces.some((workspace) => workspace.id === activeWorkspace.id)) return
     void refreshGitStatus(activeWorkspace)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeWorkspace.id, live])
+  }, [activeWorkspace.id, live, workspaces])
 
   const selectSession = (session: Session) => {
     const workspace = workspaces.find((item) => item.id === session.workspace_id)
@@ -302,7 +303,6 @@ function App() {
           {error && <div className="notice"><AlertCircle size={15} /><span>{error}</span><button onClick={() => setError(null)} aria-label="Dismiss"><X size={14} /></button></div>}
           <div className="conversation-scroll" ref={conversationScrollRef}><div className="conversation-inner">
             {messages.length === 0 ? <div className="empty-conversation"><div className="empty-icon"><MessageSquarePlus size={22} /></div><h2>{activeWorkspace.id ? 'Start a work session' : 'Add a workspace'}</h2><p>{activeWorkspace.id ? 'Ask Codex to inspect code, make a change, or explain what it finds.' : 'Choose a project folder to begin.'}</p>{!activeWorkspace.id && <button className="primary-action" onClick={() => void chooseWorkspace()}><FolderPlus size={14} /> Add workspace</button>}</div> : messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><div className="message-avatar">{message.role === 'user' ? 'YOU' : 'AI'}</div><div className="message-body"><div className="message-meta">{message.role === 'user' ? 'You' : 'Agent'} <span>{message.role === 'assistant' && '· live output'}</span></div><p>{message.content}</p></div></article>)}
-            {showActivity && events.map((event, index) => <div className="activity-row" key={`${event.type}-${event.sequence ?? index}`}><Activity size={14} /><span>{event.type.replaceAll('.', ' ')}</span><code>{event.payload.content || JSON.stringify(event.payload)}</code></div>)}
             {currentSession.status === 'running' && <div className="thinking"><LoaderCircle size={15} className="spin" /> Agent is working <span className="thinking-dots">...</span></div>}
           </div></div>
           <div className="composer-wrap"><div className="composer"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendPrompt() } }} placeholder="Ask Codex to work on your code..." rows={2} /><div className="composer-toolbar"><div className="composer-hints"><span><Terminal size={13} /> {activeWorkspace.name}</span><span>Enter to send · Shift+Enter for newline</span></div><button className="send-button" disabled={!prompt.trim() || !live || !currentSession.id || currentSession.status === 'running' || currentSession.status === 'stopping'} onClick={() => void sendPrompt()}>{live ? <Send size={15} /> : <WifiOff size={15} />} {live ? 'Send' : 'Offline'}</button></div></div><div className="composer-note">Codex runs with the workspace-write sandbox. Output is saved to session history.</div></div>

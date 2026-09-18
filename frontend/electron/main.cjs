@@ -11,6 +11,41 @@ const backendAuthToken = process.env.BACKEND_AUTH_TOKEN || (startsBackend ? cryp
 let backendUrl = process.env.BACKEND_URL || 'http://127.0.0.1:8000'
 let backendProcess
 
+function executableExists(candidate) {
+  if (!candidate) return false
+  try {
+    fs.accessSync(candidate, fs.constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function runtimePath() {
+  const home = app.getPath('home')
+  const additions = process.platform === 'win32'
+    ? [
+        path.join(process.env.LOCALAPPDATA || '', 'Programs', 'OpenAI', 'Codex', 'bin'),
+        path.join(process.env.APPDATA || '', 'npm'),
+      ]
+    : [
+        path.join(home, '.local', 'bin'),
+        '/opt/homebrew/bin',
+        '/usr/local/bin',
+      ]
+  return [...additions.filter(Boolean), process.env.PATH || ''].join(path.delimiter)
+}
+
+function resolveCodexCommand(searchPath) {
+  if (process.env.CODEX_COMMAND) return process.env.CODEX_COMMAND
+  const executableName = process.platform === 'win32' ? 'codex.exe' : 'codex'
+  for (const directory of searchPath.split(path.delimiter)) {
+    const candidate = path.join(directory, executableName)
+    if (executableExists(candidate)) return candidate
+  }
+  return executableName
+}
+
 function availablePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer()
@@ -49,22 +84,28 @@ async function startBackend() {
     return
   }
 
-  const backendRoot = path.resolve(app.getAppPath(), '../backend')
-  const python = process.env.BACKEND_PYTHON || path.join(backendRoot, '.venv/bin/python')
-  const entrypoint = path.join(backendRoot, 'main.py')
-  if (!fs.existsSync(python)) throw new Error(`Backend Python was not found at ${python}`)
-  if (!fs.existsSync(entrypoint)) throw new Error(`Backend entrypoint was not found at ${entrypoint}`)
+  const backendRoot = isDev
+    ? path.resolve(app.getAppPath(), '../backend')
+    : path.join(process.resourcesPath, 'agent-workbench-backend')
+  const command = isDev
+    ? process.env.BACKEND_PYTHON || path.join(backendRoot, '.venv/bin/python')
+    : path.join(backendRoot, process.platform === 'win32' ? 'agent-workbench-backend.exe' : 'agent-workbench-backend')
+  const commandArguments = isDev ? [path.join(backendRoot, 'main.py')] : []
+  if (!fs.existsSync(command)) throw new Error(`Backend executable was not found at ${command}`)
 
   const port = process.env.BACKEND_PORT || await availablePort()
   backendUrl = `http://127.0.0.1:${port}`
   const databasePath = path.join(app.getPath('userData'), 'agent-workbench.db')
+  const searchPath = runtimePath()
   const backendEnvironment = {
     ...process.env,
+    CODEX_COMMAND: resolveCodexCommand(searchPath),
     DATABASE_URL: process.env.DATABASE_URL || `sqlite+aiosqlite:///${databasePath}`,
     LOCAL_AUTH_TOKEN: backendAuthToken,
+    PATH: searchPath,
     PORT: String(port),
   }
-  backendProcess = spawn(python, [entrypoint], {
+  backendProcess = spawn(command, commandArguments, {
     cwd: backendRoot,
     env: backendEnvironment,
     stdio: 'inherit',

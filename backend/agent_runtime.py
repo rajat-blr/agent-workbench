@@ -87,16 +87,25 @@ class CodexAgentAdapter:
         process_options: dict[str, Any] = {}
         if os.name != "nt":
             process_options["start_new_session"] = True
-        process = await asyncio.create_subprocess_exec(
-            *self.build_command(workspace_path, prompt, thread_id),
-            cwd=workspace_path,
-            env=safe_environment,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=1024 * 1024,
-            **process_options,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *self.build_command(workspace_path, prompt, thread_id),
+                cwd=workspace_path,
+                env=safe_environment,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                limit=1024 * 1024,
+                **process_options,
+            )
+        except FileNotFoundError:
+            raise RuntimeError(
+                "Codex CLI was not found. Install Codex and sign in before sending a message."
+            ) from None
+        except PermissionError:
+            raise RuntimeError(
+                "Codex CLI was found but could not be executed. Check its file permissions."
+            ) from None
         if not process.stdin:
             process.terminate()
             raise RuntimeError("Codex stdin is unavailable")

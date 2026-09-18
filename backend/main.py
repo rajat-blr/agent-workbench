@@ -350,7 +350,9 @@ class RpcDispatcher:
                 )
             except Exception as exc:
                 await mark_run_start_failed(session.id, run.id, str(exc))
-                raise RuntimeError("Codex could not be started") from exc
+                if isinstance(exc, RuntimeError) and str(exc).startswith("Codex CLI"):
+                    raise RpcMethodError(-32020, str(exc)) from exc
+                raise RpcMethodError(-32020, "Codex could not be started") from exc
             return {"accepted": True, "session_id": session.id, "run_id": run.id}
         if method in {"session.cancel", "session.stop"}:
             values = _params(SessionIdParams, params)

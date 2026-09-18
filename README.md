@@ -46,4 +46,26 @@ npm run build
 npm run lint
 ```
 
-The desktop packaging/distribution pipeline is not implemented yet.
+The generated development builds are unsigned; public distribution signing is
+described below.
+
+## Package for macOS
+
+Create a self-contained local build from the repository root:
+
+```sh
+npm --prefix frontend run package
+```
+
+The command builds the React renderer, freezes the FastAPI backend with
+PyInstaller, and creates an Electron `.app` under `frontend/out/`.
+
+Create distributable ZIP and DMG artifacts with:
+
+```sh
+npm --prefix frontend run make
+```
+
+These local artifacts are unsigned. Code signing and notarization are required
+before distributing the DMG as a trusted public macOS release. Codex CLI remains
+a user-installed prerequisite and must already be authenticated on the machine.

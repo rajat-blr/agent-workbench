@@ -1,13 +1,17 @@
 {
-  "name": "frontend",
+  "name": "agent-workbench",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "productName": "Agent Workbench",
   "type": "module",
   "scripts": {
     "dev": "concurrently -k \"vite\" \"npm:electron:dev\"",
     "electron:dev": "wait-on tcp:127.0.0.1:5173 && electron .",
     "build": "tsc -b && vite build",
+    "build:backend": "cd ../backend && uv run --group packaging pyinstaller --clean --noconfirm agent-workbench-backend.spec",
     "lint": "oxlint",
+    "package": "npm run build && npm run build:backend && electron-forge package",
+    "make": "npm run build && npm run build:backend && electron-forge make",
     "preview": "vite preview",
     "electron": "electron ."
   },
@@ -17,6 +21,9 @@
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@electron-forge/cli": "^7.11.2",
+    "@electron-forge/maker-dmg": "^7.11.2",
+    "@electron-forge/maker-zip": "^7.11.2",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
@@ -28,5 +35,8 @@
     "vite": "^8.3.0",
     "wait-on": "^9.1.0"
   },
-  "main": "electron/main.cjs"
+  "main": "electron/main.cjs",
+  "config": {
+    "forge": "./forge.config.cjs"
+  }
 }
