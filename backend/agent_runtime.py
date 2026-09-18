@@ -49,12 +49,17 @@ class CodexAgentAdapter:
         ]
         if self.model:
             command.extend(["--model", self.model])
-        if self.skip_git_repo_check:
+        workspace = Path(workspace_path).resolve()
+        is_git_workspace = any(
+            (candidate / ".git").exists()
+            for candidate in (workspace, *workspace.parents)
+        )
+        if self.skip_git_repo_check or not is_git_workspace:
             command.append("--skip-git-repo-check")
         if thread_id:
-            command.extend(["resume", thread_id, prompt])
+            command.extend(["resume", thread_id, "-"])
         else:
-            command.extend(["--cd", workspace_path, prompt])
+            command.extend(["--cd", workspace_path, "-"])
         return command
 
     async def start(
@@ -82,16 +87,28 @@ class CodexAgentAdapter:
         process_options: dict[str, Any] = {}
         if os.name != "nt":
             process_options["start_new_session"] = True
-        return await asyncio.create_subprocess_exec(
+        process = await asyncio.create_subprocess_exec(
             *self.build_command(workspace_path, prompt, thread_id),
             cwd=workspace_path,
             env=safe_environment,
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=1024 * 1024,
             **process_options,
         )
+        if not process.stdin:
+            process.terminate()
+            raise RuntimeError("Codex stdin is unavailable")
+        try:
+            process.stdin.write(prompt.encode())
+            await process.stdin.drain()
+        except BrokenPipeError, ConnectionResetError:
+            await process.wait()
+            raise RuntimeError("Codex exited before accepting the prompt") from None
+        finally:
+            process.stdin.close()
+        return process
 
 
 @dataclass

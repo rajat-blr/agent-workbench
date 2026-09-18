@@ -51,10 +51,12 @@ async def test_event_broker_filters_sessions() -> None:
         assert await session_queue.get() == event
 
 
-def test_codex_adapter_builds_safe_json_commands() -> None:
+def test_codex_adapter_builds_safe_json_commands(tmp_path) -> None:
+    (tmp_path / ".git").mkdir()
     adapter = CodexAgentAdapter(model="gpt-test", sandbox="workspace-write")
-    first = adapter.build_command("/workspace", "fix it", None)
-    resumed = adapter.build_command("/workspace", "continue", "thread-123")
+    workspace = str(tmp_path)
+    first = adapter.build_command(workspace, "fix it", None)
+    resumed = adapter.build_command(workspace, "continue", "thread-123")
 
     assert first == [
         "codex",
@@ -67,10 +69,17 @@ def test_codex_adapter_builds_safe_json_commands() -> None:
         "--model",
         "gpt-test",
         "--cd",
-        "/workspace",
-        "fix it",
+        workspace,
+        "-",
     ]
-    assert resumed[-3:] == ["resume", "thread-123", "continue"]
+    assert resumed[-3:] == ["resume", "thread-123", "-"]
+
+
+def test_codex_adapter_allows_an_explicit_non_git_workspace(tmp_path) -> None:
+    adapter = CodexAgentAdapter()
+    command = adapter.build_command(str(tmp_path), "hello", None)
+
+    assert "--skip-git-repo-check" in command
 
 
 @pytest.mark.asyncio

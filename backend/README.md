@@ -34,7 +34,7 @@ Optional settings:
 - `CODEX_COMMAND`: Codex executable, default `codex`
 - `CODEX_MODEL`: optional model override
 - `AGENT_SANDBOX`: `read-only` or `workspace-write`, default `workspace-write`
-- `CODEX_SKIP_GIT_REPO_CHECK`: allow non-Git workspaces, default `false`
+- `CODEX_SKIP_GIT_REPO_CHECK`: always skip the Git check, default `false`. The backend enables it automatically for a user-selected workspace that is not inside a Git repository.
 - `AGENT_TIMEOUT_SECONDS`: maximum runtime for one prompt, default 3600
 - `ALLOWED_ORIGINS`: comma-separated WebSocket/HTTP origins
 
