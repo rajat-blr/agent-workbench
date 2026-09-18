@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k \"vite\" \"npm:electron:dev\"",
-    "electron:dev": "wait-on http://127.0.0.1:5173 && electron .",
+    "electron:dev": "wait-on tcp:127.0.0.1:5173 && electron .",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",

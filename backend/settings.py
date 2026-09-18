@@ -1,26 +1,38 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    database_url: str = "postgresql+asyncpg://rajat:rajat@localhost:5432/fastapi_db"
-    agent_mode: str = "fake"
-    agent_command: str = "codex"
+    database_url: str = "sqlite+aiosqlite:///./agent_workbench.db"
+    codex_command: str = "codex"
+    codex_model: str | None = None
+    agent_sandbox: str = "workspace-write"
+    codex_skip_git_repo_check: bool = False
     agent_timeout_seconds: int = 3600
-    cors_origins: str = "http://localhost:3000"
+    local_auth_token: str = ""
+    allowed_origins: str = "http://127.0.0.1:5173,http://localhost:5173,null,file://"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    def model_post_init(self, __context: object, /) -> None:
-        if self.database_url.startswith("postgres://"):
-            self.database_url = "postgresql+asyncpg://" + self.database_url.removeprefix("postgres://")
-        elif self.database_url.startswith("postgresql://"):
-            self.database_url = "postgresql+asyncpg://" + self.database_url.removeprefix("postgresql://")
-
     @property
-    def cors_origin_list(self) -> list[str]:
-        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+    def allowed_origin_list(self) -> list[str]:
+        return [
+            origin.strip()
+            for origin in self.allowed_origins.split(",")
+            if origin.strip()
+        ]
+
+    def prepare_database_directory(self) -> None:
+        prefix = "sqlite+aiosqlite:///"
+        if not self.database_url.startswith(prefix):
+            raise ValueError("Only sqlite+aiosqlite database URLs are supported")
+        raw_path = self.database_url.removeprefix(prefix)
+        if raw_path != ":memory:":
+            Path(raw_path).expanduser().resolve().parent.mkdir(
+                parents=True, exist_ok=True
+            )
 
 
 @lru_cache

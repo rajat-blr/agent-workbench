@@ -2,7 +2,7 @@
 
 interface Window {
   desktop?: {
-    getBackendUrl: () => Promise<string>
+    getBackendConnection: () => Promise<{ url: string; token: string }>
     selectDirectory: () => Promise<string | null>
   }
 }

@@ -1,20 +1,76 @@
-const { app, BrowserWindow, dialog } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain } = require('electron')
 const { spawn } = require('node:child_process')
+const crypto = require('node:crypto')
 const fs = require('node:fs')
+const net = require('node:net')
 const path = require('node:path')
 
 const isDev = !app.isPackaged
-const backendUrl = process.env.BACKEND_URL || 'http://127.0.0.1:8000'
+const startsBackend = process.env.START_BACKEND !== 'false'
+const backendAuthToken = process.env.BACKEND_AUTH_TOKEN || (startsBackend ? crypto.randomBytes(32).toString('hex') : '')
+let backendUrl = process.env.BACKEND_URL || 'http://127.0.0.1:8000'
 let backendProcess
 
-function startBackend() {
-  if (process.env.START_BACKEND === 'false') return
+function availablePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer()
+    server.unref()
+    server.on('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      const port = typeof address === 'object' && address ? address.port : null
+      server.close(() => port ? resolve(port) : reject(new Error('Could not allocate a backend port')))
+    })
+  })
+}
+
+async function waitForBackend(timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastError
+  while (Date.now() < deadline) {
+    if (backendProcess && backendProcess.exitCode !== null) {
+      throw new Error(`Backend exited with code ${backendProcess.exitCode}`)
+    }
+    try {
+      const response = await fetch(`${backendUrl}/health`)
+      if (response.ok) return
+    } catch (error) {
+      lastError = error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  throw new Error(`Backend did not become ready: ${lastError?.message || 'timed out'}`)
+}
+
+async function startBackend() {
+  if (!startsBackend) {
+    if (!backendAuthToken) throw new Error('BACKEND_AUTH_TOKEN is required when START_BACKEND=false')
+    await waitForBackend()
+    return
+  }
+
   const backendRoot = path.resolve(app.getAppPath(), '../backend')
   const python = process.env.BACKEND_PYTHON || path.join(backendRoot, '.venv/bin/python')
   const entrypoint = path.join(backendRoot, 'main.py')
-  if (!fs.existsSync(python) || !fs.existsSync(entrypoint)) return
-  backendProcess = spawn(python, [entrypoint], { cwd: backendRoot, env: process.env, stdio: 'inherit' })
+  if (!fs.existsSync(python)) throw new Error(`Backend Python was not found at ${python}`)
+  if (!fs.existsSync(entrypoint)) throw new Error(`Backend entrypoint was not found at ${entrypoint}`)
+
+  const port = process.env.BACKEND_PORT || await availablePort()
+  backendUrl = `http://127.0.0.1:${port}`
+  const databasePath = path.join(app.getPath('userData'), 'agent-workbench.db')
+  const backendEnvironment = {
+    ...process.env,
+    DATABASE_URL: process.env.DATABASE_URL || `sqlite+aiosqlite:///${databasePath}`,
+    LOCAL_AUTH_TOKEN: backendAuthToken,
+    PORT: String(port),
+  }
+  backendProcess = spawn(python, [entrypoint], {
+    cwd: backendRoot,
+    env: backendEnvironment,
+    stdio: 'inherit',
+  })
   backendProcess.on('error', (error) => console.error('Backend process failed:', error.message))
+  await waitForBackend()
 }
 
 function createWindow() {
@@ -30,35 +86,41 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   })
 
-  if (isDev) {
-    window.loadURL('http://127.0.0.1:5173')
-  } else {
-    window.loadFile(path.join(__dirname, '../dist/index.html'))
-  }
+  if (isDev) window.loadURL('http://127.0.0.1:5173')
+  else window.loadFile(path.join(__dirname, '../dist/index.html'))
 }
 
-app.whenReady().then(() => {
-  startBackend()
+ipcMain.handle('desktop:backend-connection', () => ({
+  url: backendUrl,
+  token: backendAuthToken,
+}))
+ipcMain.handle('desktop:select-directory', async () => {
+  const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
+  return result.canceled ? null : result.filePaths[0]
+})
+
+app.whenReady().then(async () => {
+  try {
+    await startBackend()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('Backend startup failed:', message)
+    dialog.showErrorBox('Agent Workbench backend failed to start', message)
+  }
+
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()
   })
-
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
-
   createWindow()
 })
 
 app.on('before-quit', () => {
   if (backendProcess && backendProcess.exitCode === null) backendProcess.kill('SIGTERM')
-})
-
-require('electron').ipcMain.handle('desktop:backend-url', () => backendUrl)
-require('electron').ipcMain.handle('desktop:select-directory', async () => {
-  const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
-  return result.canceled ? null : result.filePaths[0]
 })

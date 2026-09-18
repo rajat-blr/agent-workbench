@@ -7,3 +7,6 @@ backend/__pycache__/
 .DS_Store
 .env
 backend/validation.db
+backend/agent_workbench.db
+backend/agent_workbench.db-shm
+backend/agent_workbench.db-wal

@@ -1,68 +1,67 @@
-## Agent Harness Backend
+# Agent Workbench backend
 
-This backend is the local environment server for a native coding-agent client. It owns the workspace path, agent process, PostgreSQL history, and live session events. The desktop client communicates over HTTP JSON-RPC and one shared WebSocket connection.
+The backend owns workspace registration, SQLite history, Codex processes, and live session events. Each prompt creates a durable run and launches `codex exec --json` in the selected workspace. Later prompts resume the Codex thread recorded for that session.
 
-### Run PostgreSQL
+## Database
 
-From the repository root:
+The default URL is:
+
+```text
+sqlite+aiosqlite:///./agent_workbench.db
+```
+
+Electron overrides this with a database inside its application-data directory. Set `DATABASE_URL` to choose another SQLite file. Tables are created on startup; migrations are intentionally deferred for now.
+
+SQLite is configured with foreign keys, WAL mode, and a five-second busy timeout.
+
+## Start manually
+
+The local API requires a secret. Use the same value in clients connecting to the WebSocket.
 
 ```sh
-docker compose up -d postgres
+uv sync --group dev
+LOCAL_AUTH_TOKEN=development-only-token uv run fastapi dev main.py
 ```
 
-The default connection is `postgresql+asyncpg://rajat:rajat@localhost:5432/fastapi_db`. Set `DATABASE_URL` to override it. Standard `postgresql://` URLs are converted automatically for the async driver.
-
-### Start the server
-
-From `backend/`:
+To connect the Electron client to that manually started server:
 
 ```sh
-source .venv/bin/activate
-AGENT_MODE=fake fastapi dev main.py
+START_BACKEND=false BACKEND_AUTH_TOKEN=development-only-token npm --prefix ../frontend run dev
 ```
 
-The default `AGENT_MODE=fake` runs the local subscription-free test agent. It reads prompts from stdin and streams a deterministic response back through the same runtime path as a real provider.
+Optional settings:
 
-For a real CLI, use `AGENT_MODE=command AGENT_COMMAND=codex fastapi dev main.py`. Use `AGENT_COMMAND=claude` for a Claude-style CLI, or provide another quoted command. The command runs with the registered workspace as its current directory and receives prompts on stdin.
+- `CODEX_COMMAND`: Codex executable, default `codex`
+- `CODEX_MODEL`: optional model override
+- `AGENT_SANDBOX`: `read-only` or `workspace-write`, default `workspace-write`
+- `CODEX_SKIP_GIT_REPO_CHECK`: allow non-Git workspaces, default `false`
+- `AGENT_TIMEOUT_SECONDS`: maximum runtime for one prompt, default 3600
+- `ALLOWED_ORIGINS`: comma-separated WebSocket/HTTP origins
 
-### JSON-RPC
+The backend deliberately rejects `danger-full-access`. Codex inherits a filtered environment rather than every secret available to the desktop process.
 
-HTTP endpoint: `POST /rpc`
+## Transport
 
-```json
-{
-	"jsonrpc": "2.0",
-	"id": 1,
-	"method": "workspace.create",
-	"params": {"path": "/Users/me/project", "name": "Project"}
-}
-```
+HTTP JSON-RPC is available at `POST /rpc` with `Authorization: Bearer <token>`.
 
-Supported methods include `health.check`, `workspace.create`, `workspace.list`, `workspace.get`, `session.create`, `session.list`, `session.get`, `session.history`, `session.send`, `session.cancel`, and `session.stop`.
+The desktop client uses `ws://127.0.0.1:8000/ws` and sends the token through the `auth.<token>` WebSocket subprotocol. This keeps the secret out of access-log URLs. Connections require both the token and an allowed `Origin`.
 
-### WebSocket
+Supported methods:
 
-Connect to `ws://127.0.0.1:8000/ws` and send the same JSON-RPC request objects. The server sends live events as JSON-RPC notifications:
+- `health.check`
+- `workspace.create`, `workspace.list`, `workspace.get`
+- `session.create`, `session.list`, `session.get`, `session.history`
+- `session.send`, `session.cancel`, `session.stop`
+- `session.subscribe`, `session.unsubscribe`
 
-```json
-{
-	"jsonrpc": "2.0",
-	"method": "session.event",
-	"params": {
-		"session_id": 1,
-		"type": "agent.stdout",
-		"payload": {"content": "Reading files..."}
-	}
-}
-```
+`session.history.after_sequence` uses the durable SQLite event ID. Clients should subscribe first, then request history so events produced during synchronization can be deduplicated safely.
 
-The WebSocket is a transport connection, not the owner of the agent. Closing the native client does not intentionally stop the agent. Reconnect by fetching `session.history` and then listening for new notifications.
-
-### Development checks
-
-The backend currently uses development-time `Base.metadata.create_all`. Add Alembic before production migrations.
+## Checks
 
 ```sh
-PYTHONPATH=. .venv/bin/pytest -q tests
-.venv/bin/ruff check main.py settings.py event_broker.py agent_runtime.py database
+.venv/bin/pytest -q
+.venv/bin/ruff format --check main.py settings.py event_broker.py agent_runtime.py database tests
+.venv/bin/ruff check main.py settings.py event_broker.py agent_runtime.py database tests
 ```
+
+The tests use small subprocess adapters and never consume a Codex subscription.

@@ -1,62 +1,127 @@
 import asyncio
-import shlex
 import sys
+from datetime import UTC, datetime
 
 import pytest
 
-from agent_runtime import AgentRuntimeManager, CommandAgentAdapter, FakeAgentAdapter
-from event_broker import EventBroker
+from agent_runtime import AgentRuntimeManager, CodexAgentAdapter
+from event_broker import AgentEvent, EventBroker
+
+
+class ScriptAdapter:
+    def __init__(self, script: str) -> None:
+        self.script = script
+
+    async def start(
+        self, workspace_path: str, prompt: str, thread_id: str | None = None
+    ):
+        return await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-u",
+            "-c",
+            self.script,
+            cwd=workspace_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+
+def event_persister(events: list[AgentEvent]):
+    async def persist(session_id, run_id, event_type, payload, source_event_id):
+        event = AgentEvent(
+            session_id=session_id,
+            run_id=run_id,
+            type=event_type,
+            payload=payload,
+            sequence=len(events) + 1,
+            created_at=datetime.now(UTC).isoformat(),
+        )
+        events.append(event)
+        return event
+
+    return persist
 
 
 @pytest.mark.asyncio
-async def test_event_broker_preserves_order_and_filters_sessions() -> None:
+async def test_event_broker_filters_sessions() -> None:
     broker = EventBroker()
+    event = AgentEvent(7, 3, "first", {}, 42, datetime.now(UTC).isoformat())
     async with broker.subscribe(7) as session_queue:
-        await broker.publish(7, "first", {})
-        await broker.publish(8, "other", {})
-        await broker.publish(7, "second", {})
-        first = await session_queue.get()
-        second = await session_queue.get()
+        broker.publish(event)
+        assert await session_queue.get() == event
 
-    assert [first.type, second.type] == ["first", "second"]
-    assert [first.sequence, second.sequence] == [1, 3]
+
+def test_codex_adapter_builds_safe_json_commands() -> None:
+    adapter = CodexAgentAdapter(model="gpt-test", sandbox="workspace-write")
+    first = adapter.build_command("/workspace", "fix it", None)
+    resumed = adapter.build_command("/workspace", "continue", "thread-123")
+
+    assert first == [
+        "codex",
+        "exec",
+        "--json",
+        "--color",
+        "never",
+        "--sandbox",
+        "workspace-write",
+        "--model",
+        "gpt-test",
+        "--cd",
+        "/workspace",
+        "fix it",
+    ]
+    assert resumed[-3:] == ["resume", "thread-123", "continue"]
 
 
 @pytest.mark.asyncio
-async def test_command_agent_runs_in_background_and_streams_output(tmp_path) -> None:
-    command = shlex.join([sys.executable, "-u", "-c", "import sys; [print('echo:' + line.strip(), flush=True) for line in sys.stdin]"])
+async def test_runtime_streams_codex_json_and_completes(tmp_path) -> None:
+    messages = [
+        {"type": "thread.started", "thread_id": "thread-1"},
+        {
+            "type": "item.completed",
+            "item": {"id": "item-1", "type": "agent_message", "text": "Done"},
+        },
+        {"type": "turn.completed", "usage": {"input_tokens": 2, "output_tokens": 1}},
+    ]
+    script = f"import json; [print(json.dumps(x), flush=True) for x in {messages!r}]"
+    persisted: list[AgentEvent] = []
     broker = EventBroker()
-    runtime = AgentRuntimeManager(broker, CommandAgentAdapter(command))
+    runtime = AgentRuntimeManager(
+        broker, ScriptAdapter(script), event_persister(persisted), timeout_seconds=2
+    )
 
     async with broker.subscribe(1) as queue:
-        await runtime.start(1, str(tmp_path))
-        await runtime.send(1, "hello")
-        events = [await asyncio.wait_for(queue.get(), timeout=2) for _ in range(3)]
+        await runtime.start(1, 9, str(tmp_path), "test prompt")
+        received = []
+        while not received or received[-1].type != "session.completed":
+            received.append(await asyncio.wait_for(queue.get(), timeout=2))
 
-    assert events[0].type == "session.started"
-    assert events[1].type == "message.sent"
-    assert events[2].type == "command.output"
-    assert events[2].payload["content"] == "echo:hello"
-    await runtime.stop(1)
+    assert [event.type for event in received] == [
+        "session.started",
+        "codex.thread.started",
+        "assistant.text",
+        "codex.turn.completed",
+        "session.completed",
+    ]
+    assert received[2].payload["content"] == "Done"
+    assert [event.sequence for event in persisted] == [1, 2, 3, 4, 5]
     await runtime.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_fake_agent_returns_a_subscription_free_response(tmp_path) -> None:
+async def test_runtime_enforces_timeout(tmp_path) -> None:
+    persisted: list[AgentEvent] = []
     broker = EventBroker()
-    runtime = AgentRuntimeManager(broker, FakeAgentAdapter())
+    runtime = AgentRuntimeManager(
+        broker,
+        ScriptAdapter("import time; time.sleep(10)"),
+        event_persister(persisted),
+        timeout_seconds=0.05,
+    )
 
-    async with broker.subscribe(2) as queue:
-        await runtime.start(2, str(tmp_path))
-        await runtime.send(2, "test prompt")
-        events = [await asyncio.wait_for(queue.get(), timeout=2) for _ in range(5)]
+    await runtime.start(2, 10, str(tmp_path), "wait")
+    while not persisted or persisted[-1].type != "session.failed":
+        await asyncio.sleep(0.01)
 
-    assert [event.type for event in events[:2]] == ["session.started", "message.sent"]
-    assert [event.type for event in events[2:]] == ["assistant.text", "assistant.text", "assistant.text"]
-    assert [event.payload["content"] for event in events[2:]] == [
-        "I received: test prompt",
-        "This is a local test-agent response; no provider subscription is required.",
-        "The backend streamed this response from a background process.",
-    ]
-    await runtime.stop(2)
+    assert persisted[-1].payload["error"].startswith("Codex exceeded")
     await runtime.shutdown()

@@ -1,6 +1,6 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('desktop', {
-  getBackendUrl: () => ipcRenderer.invoke('desktop:backend-url'),
+  getBackendConnection: () => ipcRenderer.invoke('desktop:backend-connection'),
   selectDirectory: () => ipcRenderer.invoke('desktop:select-directory'),
 })

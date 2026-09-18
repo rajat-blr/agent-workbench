@@ -2,7 +2,7 @@ export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 're
 export type SessionStatus = 'idle' | 'running' | 'stopping' | 'completed' | 'failed' | 'cancelled'
 
 export type Workspace = { id: number; path: string; name: string; created_at?: string | null }
-export type Session = { id: number; workspace_id: number; provider: string; status: SessionStatus; created_at?: string | null; updated_at?: string | null }
+export type Session = { id: number; workspace_id: number; provider: string; status: SessionStatus; title?: string | null; created_at?: string | null; updated_at?: string | null }
 export type Message = { role: 'user' | 'assistant'; content: string }
 export type ActivityEvent = { id?: number; type: string; payload: { content?: string; [key: string]: unknown }; sequence?: number; created_at?: string }
 export type SessionHistory = { session: Session; conversation: Message[]; events: ActivityEvent[]; last_sequence: number }
@@ -18,16 +18,22 @@ export class RpcClient {
   private statusHandler: ((status: ConnectionStatus) => void) | null = null
   private reconnectTimer: number | undefined
   private endpoint = 'ws://127.0.0.1:8000/ws'
+  private token = ''
   private intentionallyClosed = false
 
-  async connect(httpUrl?: string) {
-    if (httpUrl) this.endpoint = httpUrl.replace(/^http/, 'ws') + '/ws'
+  async connect(connection?: { url: string; token: string }) {
+    if (connection) {
+      const endpoint = new URL('/ws', connection.url)
+      endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:'
+      this.endpoint = endpoint.toString()
+      this.token = connection.token
+    }
     this.intentionallyClosed = false
     if (this.socket && this.socket.readyState === WebSocket.OPEN) return
     if (this.socket && this.socket.readyState !== WebSocket.CLOSED) this.socket.close()
     this.statusHandler?.('connecting')
     return new Promise<void>((resolve, reject) => {
-      const socket = new WebSocket(this.endpoint)
+      const socket = new WebSocket(this.endpoint, ['agent-workbench', `auth.${this.token}`])
       this.socket = socket
       socket.onopen = () => { this.statusHandler?.('connected'); resolve() }
       socket.onmessage = (message) => this.handleMessage(JSON.parse(message.data))
@@ -39,6 +45,7 @@ export class RpcClient {
       socket.onclose = () => {
         if (this.socket !== socket || this.intentionallyClosed) return
         this.socket = null
+        this.rejectPending(new Error('Backend connection closed'))
         this.statusHandler?.('reconnecting')
         this.scheduleReconnect()
       }
@@ -75,15 +82,29 @@ export class RpcClient {
         reject(new Error('Backend connection is unavailable'))
         return
       }
-      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject })
+      const timeout = window.setTimeout(() => {
+        if (!this.pending.delete(id)) return
+        reject(new Error(`Backend request timed out: ${method}`))
+      }, 15_000)
+      this.pending.set(id, {
+        resolve: (value) => { window.clearTimeout(timeout); resolve(value as T) },
+        reject: (reason) => { window.clearTimeout(timeout); reject(reason) },
+      })
       this.socket.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }))
     })
   }
 
   onEvent(handler: EventHandler) { this.eventHandler = handler }
   onStatus(handler: (status: ConnectionStatus) => void) { this.statusHandler = handler }
+  private rejectPending(error: Error) {
+    for (const request of this.pending.values()) request.reject(error)
+    this.pending.clear()
+  }
   close() {
     this.intentionallyClosed = true
+    if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = undefined
+    this.rejectPending(new Error('Backend connection closed'))
     this.socket?.close()
     this.socket = null
   }
