@@ -8,6 +8,14 @@ class WorkspaceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
 
+class WorkspaceIdParams(BaseModel):
+    workspace_id: int = Field(gt=0)
+
+
+class WorkspaceRename(WorkspaceIdParams):
+    name: str = Field(min_length=1, max_length=200)
+
+
 class SessionCreate(BaseModel):
     workspace_id: int = Field(gt=0)
     provider: Literal["codex"] = "codex"

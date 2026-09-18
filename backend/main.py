@@ -31,6 +31,8 @@ from database.schemas import (
     SessionIdParams,
     SessionSend,
     WorkspaceCreate,
+    WorkspaceIdParams,
+    WorkspaceRename,
 )
 from event_broker import AgentEvent, EventBroker
 from settings import settings
@@ -81,6 +83,41 @@ def _resolve_workspace(path: str) -> str:
     return str(resolved)
 
 
+async def _git_status(path: str) -> dict[str, Any]:
+    async def run(*arguments: str) -> tuple[int, str]:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "git",
+                "-C",
+                path,
+                *arguments,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            return 1, ""
+        try:
+            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=4)
+        except TimeoutError:
+            process.kill()
+            await process.communicate()
+            return 1, ""
+        return process.returncode or 0, stdout.decode(errors="replace").strip()
+
+    return_code, _ = await run("rev-parse", "--is-inside-work-tree")
+    if return_code:
+        return {"is_repository": False, "branch": None, "dirty_count": 0}
+    _, branch = await run("branch", "--show-current")
+    if not branch:
+        _, branch = await run("rev-parse", "--short", "HEAD")
+    _, changes = await run("status", "--porcelain")
+    return {
+        "is_repository": True,
+        "branch": branch or "unknown",
+        "dirty_count": len(changes.splitlines()) if changes else 0,
+    }
+
+
 def _params(model: type[BaseModel], values: dict[str, Any]) -> BaseModel:
     return model.model_validate(values)
 
@@ -127,6 +164,27 @@ class RpcDispatcher:
             raise RpcMethodError(-32004, "Session not found")
         return session
 
+    async def _workspace(
+        self, db: AsyncSession, workspace_id: int
+    ) -> models.Workspace:
+        workspace = await db.get(models.Workspace, workspace_id)
+        if not workspace:
+            raise RpcMethodError(-32004, "Workspace not found")
+        return workspace
+
+    async def _has_active_run(
+        self, db: AsyncSession, *, session_id: int | None = None,
+        workspace_id: int | None = None,
+    ) -> bool:
+        query = select(models.Run.id).join(models.Session).where(
+            models.Run.status.in_(("queued", "running", "stopping"))
+        )
+        if session_id is not None:
+            query = query.where(models.Run.session_id == session_id)
+        if workspace_id is not None:
+            query = query.where(models.Session.workspace_id == workspace_id)
+        return await db.scalar(query) is not None
+
     async def _dispatch_method(
         self, method: str, params: dict[str, Any], db: AsyncSession
     ) -> Any:
@@ -135,6 +193,8 @@ class RpcDispatcher:
             return {"status": "ok"}
         if method == "workspace.create":
             values = _params(WorkspaceCreate, params)
+            if not values.name.strip():
+                raise ValueError("Workspace name is required")
             workspace = models.Workspace(
                 path=_resolve_workspace(values.path), name=values.name.strip()
             )
@@ -150,12 +210,29 @@ class RpcDispatcher:
             ).all()
             return [_workspace_dict(workspace) for workspace in workspaces]
         if method == "workspace.get":
-            workspace = await db.get(
-                models.Workspace, int(params.get("workspace_id", 0))
-            )
-            if not workspace:
-                raise RpcMethodError(-32004, "Workspace not found")
+            values = _params(WorkspaceIdParams, params)
+            return _workspace_dict(await self._workspace(db, values.workspace_id))
+        if method == "workspace.rename":
+            values = _params(WorkspaceRename, params)
+            if not values.name.strip():
+                raise ValueError("Workspace name is required")
+            workspace = await self._workspace(db, values.workspace_id)
+            workspace.name = values.name.strip()
+            await db.commit()
+            await db.refresh(workspace)
             return _workspace_dict(workspace)
+        if method == "workspace.git_status":
+            values = _params(WorkspaceIdParams, params)
+            workspace = await self._workspace(db, values.workspace_id)
+            return await _git_status(workspace.path)
+        if method == "workspace.delete":
+            values = _params(WorkspaceIdParams, params)
+            workspace = await self._workspace(db, values.workspace_id)
+            if await self._has_active_run(db, workspace_id=workspace.id):
+                raise RpcMethodError(-32010, "Stop active sessions before removing this workspace")
+            await db.delete(workspace)
+            await db.commit()
+            return {"deleted": True, "workspace_id": values.workspace_id}
         if method == "session.create":
             values = _params(SessionCreate, params)
             workspace = await db.get(models.Workspace, values.workspace_id)
@@ -181,6 +258,14 @@ class RpcDispatcher:
         if method == "session.get":
             values = _params(SessionIdParams, params)
             return _session_dict(await self._session(db, values.session_id))
+        if method == "session.delete":
+            values = _params(SessionIdParams, params)
+            session = await self._session(db, values.session_id)
+            if await self._has_active_run(db, session_id=session.id):
+                raise RpcMethodError(-32010, "Stop the active run before deleting this session")
+            await db.delete(session)
+            await db.commit()
+            return {"deleted": True, "session_id": values.session_id}
         if method == "session.history":
             values = _params(SessionHistoryParams, params)
             session = await self._session(db, values.session_id)

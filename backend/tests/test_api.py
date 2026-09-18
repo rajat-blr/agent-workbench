@@ -88,4 +88,39 @@ async def test_sqlite_dispatch_and_durable_events(tmp_path, monkeypatch) -> None
     ]
     assert history["conversation"][1]["content"] == "Inspection complete"
     assert stored_session and stored_session.status == "completed"
+
+    async with session_factory() as db:
+        renamed = await dispatch(
+            dispatcher,
+            db,
+            "workspace.rename",
+            {"workspace_id": workspace["id"], "name": "Renamed project"},
+        )
+        git_status = await dispatch(
+            dispatcher,
+            db,
+            "workspace.git_status",
+            {"workspace_id": workspace["id"]},
+        )
+        deleted_session = await dispatch(
+            dispatcher,
+            db,
+            "session.delete",
+            {"session_id": session["id"]},
+        )
+        deleted_workspace = await dispatch(
+            dispatcher,
+            db,
+            "workspace.delete",
+            {"workspace_id": workspace["id"]},
+        )
+
+    assert renamed["name"] == "Renamed project"
+    assert git_status == {
+        "is_repository": False,
+        "branch": None,
+        "dirty_count": 0,
+    }
+    assert deleted_session == {"deleted": True, "session_id": session["id"]}
+    assert deleted_workspace == {"deleted": True, "workspace_id": workspace["id"]}
     await engine.dispose()
