@@ -7,12 +7,11 @@ import {
 } from 'lucide-react'
 import './App.css'
 import { CodebaseMapView } from './CodebaseMapView'
+import { RunDiffView } from './RunDiffView'
 import { WorkPanel } from './WorkPanel'
 import { rpcClient } from './runtime'
-import type { ActivityEvent, ConnectionStatus, Message, Session, SessionHistory, SessionStatus, Workspace } from './runtime'
+import type { ActivityEvent, ConnectionStatus, GitStatus, Message, RunDiff, Session, SessionHistory, SessionStatus, Workspace } from './runtime'
 import { summarizeWork } from './workSummary'
-
-type GitStatus = { is_repository: boolean; branch: string | null; dirty_count: number }
 
 const demoWorkspace: Workspace = { id: 1, name: 'agent-harness', path: '/Users/you/Documents/agent-harness' }
 const demoSession: Session = { id: 1, workspace_id: 1, provider: 'codex', status: 'running' }
@@ -51,6 +50,8 @@ function App() {
   const [activeSession, setActiveSession] = useState<Session>(demoSession)
   const [messages, setMessages] = useState<Message[]>(demoMessages)
   const [events, setEvents] = useState<ActivityEvent[]>([])
+  const [runDiff, setRunDiff] = useState<RunDiff | null>(null)
+  const [reviewDiff, setReviewDiff] = useState<RunDiff | null>(null)
   const [prompt, setPrompt] = useState('')
   const [showActivity, setShowActivity] = useState(() => localStorage.getItem('showActivity') !== 'false')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('sidebarCollapsed') === 'true')
@@ -66,6 +67,7 @@ function App() {
   const activeSessionId = useRef(activeSession.id)
   const lastSequenceRef = useRef(0)
   const conversationScrollRef = useRef<HTMLDivElement>(null)
+  const diffRefreshTimer = useRef<number | undefined>(undefined)
 
   useEffect(() => { activeSessionId.current = activeSession.id }, [activeSession.id])
   useEffect(() => { localStorage.setItem('showActivity', String(showActivity)) }, [showActivity])
@@ -82,6 +84,8 @@ function App() {
   const currentSession = sessions.find((session) => session.id === activeSession.id) ?? activeSession
   const groupedSessions = useMemo(() => sessions.filter((session) => session.workspace_id === activeWorkspace.id), [sessions, activeWorkspace.id])
   const workSummary = useMemo(() => summarizeWork(events, currentSession.status), [events, currentSession.status])
+  const latestRunId = Math.max(events.reduce((id, event) => Math.max(id, event.run_id ?? 0), 0), messages.reduce((id, message) => Math.max(id, message.run_id ?? 0), 0)) || undefined
+  const earlierRunIds = useMemo(() => [...new Set([...messages, ...events].map((item) => item.run_id).filter((id): id is number => id != null && id !== latestRunId))].sort((a, b) => b - a), [messages, events, latestRunId])
 
   useEffect(() => {
     rpcClient.onStatus(setConnection)
@@ -90,7 +94,15 @@ function App() {
       if (event.sequence && event.sequence <= lastSequenceRef.current) return
       if (event.sequence) lastSequenceRef.current = event.sequence
       setEvents((current) => current.some((item) => item.sequence === event.sequence) ? current : [...current, event])
-      if (event.type === 'assistant.text' && event.payload.content) setMessages((current) => [...current, { role: 'assistant', content: event.payload.content as string }])
+      if (event.type === 'assistant.text' && event.payload.content) setMessages((current) => [...current, { role: 'assistant', content: event.payload.content as string, run_id: event.run_id }])
+      if (event.run_id != null && (event.type === 'artifact.run_diff' || event.type === 'codex.item.completed' || event.type === 'session.completed' || event.type === 'session.failed' || event.type === 'session.cancelled')) {
+        const sessionId = event.session_id
+        const runId = event.run_id
+        if (diffRefreshTimer.current) window.clearTimeout(diffRefreshTimer.current)
+        diffRefreshTimer.current = window.setTimeout(() => {
+          void rpcClient.request<RunDiff>('run.diff.get', { session_id: sessionId, run_id: runId }).then((diff) => { if (activeSessionId.current === sessionId) setRunDiff(diff) }).catch(() => undefined)
+        }, event.type === 'artifact.run_diff' ? 0 : 600)
+      }
       if (event.type.startsWith('session.')) {
         const status = event.type.replace('session.', '') as SessionStatus
         if (['running', 'stopping', 'completed', 'failed', 'cancelled'].includes(status)) {
@@ -108,8 +120,15 @@ function App() {
       } catch { setError('Waiting for the backend connection…') }
     }
     void connect()
-    return () => rpcClient.close()
+    return () => { if (diffRefreshTimer.current) window.clearTimeout(diffRefreshTimer.current); rpcClient.close() }
   }, [])
+
+  useEffect(() => {
+    if (!live || !activeSession.id || latestRunId == null) return
+    let cancelled = false
+    void rpcClient.request<RunDiff>('run.diff.get', { session_id: activeSession.id, run_id: latestRunId }).then((diff) => { if (!cancelled) setRunDiff(diff) }).catch(() => undefined)
+    return () => { cancelled = true }
+  }, [activeSession.id, latestRunId, live])
 
   useEffect(() => {
     if (!live) return
@@ -168,12 +187,12 @@ function App() {
     if (!workspaces.some((workspace) => workspace.id === activeWorkspace.id)) return
     void refreshGitStatus(activeWorkspace)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeWorkspace.id, live, workspaces])
+  }, [activeWorkspace.id, live, workspaces, currentSession.status])
 
-  const selectSession = (session: Session) => {
-    const workspace = workspaces.find((item) => item.id === session.workspace_id)
+  const selectSession = (session: Session, selectedWorkspace?: Workspace) => {
+    const workspace = selectedWorkspace ?? workspaces.find((item) => item.id === session.workspace_id)
     if (workspace) setActiveWorkspace(workspace)
-    lastSequenceRef.current = 0; setMessages([]); setEvents([]); setShowMap(false); setActiveSession(session); setSessionMenuId(null)
+    lastSequenceRef.current = 0; setMessages([]); setEvents([]); setRunDiff(null); setReviewDiff(null); setShowMap(false); setActiveSession(session); setSessionMenuId(null)
   }
 
   const selectWorkspace = (workspace: Workspace) => {
@@ -187,10 +206,18 @@ function App() {
   const chooseWorkspace = async () => {
     const path = window.desktop ? await window.desktop.selectDirectory() : window.prompt('Workspace path')
     if (!path) return
+    let workspace: Workspace
     try {
-      const workspace = await rpcClient.request<Workspace>('workspace.create', { path, name: path.split('/').pop() || 'Workspace' })
-      setWorkspaces((current) => [...current, workspace]); selectWorkspace(workspace); setError(null)
-    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not add workspace.') }
+      workspace = await rpcClient.request<Workspace>('workspace.create', { path, name: path.split('/').pop() || 'Workspace' })
+    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not add workspace.'); return }
+    setWorkspaces((current) => [...current, workspace])
+    try {
+      const session = await rpcClient.request<Session>('session.create', { workspace_id: workspace.id, provider: 'codex' })
+      setSessions((current) => [session, ...current]); selectSession(session, workspace); setError(null)
+    } catch (requestError) {
+      selectWorkspace(workspace)
+      setError(`Workspace added, but its first session could not be created: ${requestError instanceof Error ? requestError.message : 'Unknown error'}`)
+    }
   }
 
   const createSession = async () => {
@@ -246,9 +273,9 @@ function App() {
     if (!sessions.some((session) => session.id === activeSession.id && session.workspace_id === activeWorkspace.id)) { setError('Create or select a session in this workspace before sending a prompt.'); return }
     const mode = modeOverride ?? (/\b(explain|map|diagram)\b.*\b(codebase|architecture|project)\b/i.test(content) ? 'map' : 'chat')
     try {
-      await rpcClient.request('session.send', { session_id: activeSession.id, content, mode })
+      const result = await rpcClient.request<{ run_id: number }>('session.send', { session_id: activeSession.id, content, mode })
       if (!contentOverride) setPrompt('')
-      setShowMap(false); setMessages((current) => [...current, { role: 'user', content }])
+      setRunDiff(null); setShowMap(false); setMessages((current) => [...current, { role: 'user', content, run_id: result.run_id }])
       setActiveSession((session) => ({ ...session, status: 'running', title: session.title || content.slice(0, 80) }))
       setSessions((current) => current.map((session) => session.id === activeSession.id ? { ...session, status: 'running', title: session.title || content.slice(0, 80) } : session))
       setError(null)
@@ -285,6 +312,20 @@ function App() {
       if (window.desktop) await window.desktop.revealWorkspaceFile(activeWorkspace.path, file)
       else await navigator.clipboard.writeText(`${activeWorkspace.path}/${file}`)
     } catch { setError('Could not reveal this file.') }
+  }
+
+  const openRunDiff = async (runId: number) => {
+    try {
+      const diff = await rpcClient.request<RunDiff>('run.diff.get', { session_id: activeSession.id, run_id: runId })
+      setReviewDiff(diff)
+    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not load the saved diff.') }
+  }
+
+  const decideRunDiff = async (runId: number, action: 'accept' | 'revert') => {
+    const diff = await rpcClient.request<RunDiff>(`run.diff.${action}`, { session_id: activeSession.id, run_id: runId })
+    setReviewDiff(diff)
+    setRunDiff((current) => current?.run_id === runId ? diff : current)
+    if (action === 'revert') await refreshGitStatus()
   }
 
   const displayedWorkspaces = workspaces.length ? workspaces : live ? [] : [demoWorkspace]
@@ -334,13 +375,14 @@ function App() {
           <div className="composer-wrap"><div className="composer"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendPrompt() } }} placeholder="Ask Codex to work on your code..." rows={2} /><div className="composer-toolbar"><div className="composer-hints"><span><Terminal size={13} /> {activeWorkspace.name}</span><span>Enter to send · Shift+Enter for newline</span></div><div className="composer-actions"><button className="map-action" disabled={!live || !currentSession.id || currentSession.status === 'running' || currentSession.status === 'stopping'} onClick={() => void sendPrompt('Explain this codebase and map its main components and data flow.', 'map')}><Map size={14} /> Map codebase</button><button className="send-button" disabled={!prompt.trim() || !live || !currentSession.id || currentSession.status === 'running' || currentSession.status === 'stopping'} onClick={() => void sendPrompt()}>{live ? <Send size={15} /> : <WifiOff size={15} />} {live ? 'Send' : 'Offline'}</button></div></div></div><div className="composer-note">Codex runs with the workspace-write sandbox. Output is saved to session history.</div></div>
         </section>
 
-        {showActivity && <aside className="activity-panel"><div className="activity-header"><div><span className="eyebrow">Session</span><h2>Work</h2></div><button className="icon-button" aria-label="Hide work panel" onClick={() => setShowActivity(false)}><PanelLeftClose size={16} /></button></div><WorkPanel summary={workSummary} status={currentSession.status} syncing={syncing} canSync={Boolean(currentSession.id)} onSync={() => void syncSession()} onOpenMap={() => setShowMap(true)} /></aside>}
+        {showActivity && <aside className="activity-panel"><div className="activity-header"><div><span className="eyebrow">Session</span><h2>Work</h2></div><button className="icon-button" aria-label="Hide work panel" onClick={() => setShowActivity(false)}><PanelLeftClose size={16} /></button></div><WorkPanel summary={workSummary} status={currentSession.status} syncing={syncing} canSync={Boolean(currentSession.id)} onSync={() => void syncSession()} onOpenMap={() => setShowMap(true)} diff={runDiff?.run_id === latestRunId ? runDiff : null} earlierRunIds={earlierRunIds} onReviewDiff={(runId) => void openRunDiff(runId)} workspaceId={activeWorkspace.id} gitStatus={gitStatus} gitDisabled={!live || currentSession.status === 'running' || currentSession.status === 'stopping'} onGitChanged={setGitStatus} /></aside>}
         {sidebarCollapsed && <button className="show-sidebar" onClick={() => setSidebarCollapsed(false)} aria-label="Show sidebar"><PanelLeftOpen size={16} /></button>}
         {!showActivity && <button className="show-activity" onClick={() => setShowActivity(true)} aria-label="Show activity"><Activity size={16} /></button>}
       </div>
 
       {showSettings && <div className="modal-backdrop" onClick={() => setShowSettings(false)}><section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><span className="eyebrow">Application</span><h2 id="settings-title">Settings & status</h2></div><button className="icon-button" aria-label="Close settings" onClick={() => setShowSettings(false)}><X size={16} /></button></div><div className="settings-list"><div><span>Backend</span><strong className={live ? 'healthy' : 'unhealthy'}>{statusLabel(connection)}</strong></div><div><span>Agent provider</span><strong>Codex</strong></div><div><span>Database</span><strong>SQLite · local</strong></div><div><span>Sandbox</span><strong>Workspace write</strong></div><div><span>Workspace</span><strong title={activeWorkspace.path}>{activeWorkspace.id ? activeWorkspace.name : 'None'}</strong></div></div><label className="setting-toggle"><input type="checkbox" checked={!sidebarCollapsed} onChange={(event) => setSidebarCollapsed(!event.target.checked)} /> Show workspace sidebar</label><label className="setting-toggle"><input type="checkbox" checked={showActivity} onChange={(event) => setShowActivity(event.target.checked)} /> Show activity panel</label><div className="modal-actions"><button className="secondary-action" disabled={!live || checkingBackend} onClick={() => void checkBackend()}><RefreshCw size={14} className={checkingBackend ? 'spin' : ''} /> Check backend</button><button className="primary-action" onClick={() => setShowSettings(false)}>Done</button></div></section></div>}
       {showMap && workSummary.map && <CodebaseMapView map={workSummary.map} onClose={() => setShowMap(false)} onOpenFile={(file) => void revealMapFile(file)} />}
+      {reviewDiff && <RunDiffView diff={reviewDiff} onClose={() => setReviewDiff(null)} onDecision={(action) => decideRunDiff(reviewDiff.run_id, action)} />}
     </main>
   )
 }

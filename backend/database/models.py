@@ -108,6 +108,29 @@ class Run(Base):
     session: Mapped[Session] = relationship(back_populates="runs")
     messages: Mapped[list[Message]] = relationship(back_populates="run")
     events: Mapped[list[SessionEvent]] = relationship(back_populates="run")
+    diff: Mapped[RunDiff | None] = relationship(
+        back_populates="run", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class RunDiff(Base):
+    __tablename__ = "run_diffs"
+
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True
+    )
+    workspace_path: Mapped[str] = mapped_column(String)
+    repo_path: Mapped[str] = mapped_column(String)
+    baseline: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(32), default="capturing")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    final: Mapped[bool] = mapped_column(default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    run: Mapped[Run] = relationship(back_populates="diff")
 
 
 class Message(Base):

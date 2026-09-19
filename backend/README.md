@@ -24,6 +24,7 @@ types in `database/schemas.py` and `database/types.py`:
 | `runs` | One prompt execution, process/status/error details, timestamps |
 | `messages` | Ordered user and assistant conversation text, linked to a run |
 | `session_events` | Ordered runtime events with a SQLite JSON payload, linked to a run |
+| `run_diffs` | Per-run Git baseline while active and saved final change review |
 
 Conversation messages remain rows of text, not one large JSON document. Event payloads
 use SQLAlchemy's `JSON` type, which stores JSON text in SQLite. Session deletion
@@ -68,6 +69,7 @@ Supported methods:
 
 - `health.check`
 - `workspace.create`, `workspace.list`, `workspace.get`
+- `workspace.git_status`, `workspace.git_stage`, `workspace.git_commit`, `workspace.git_push_main`
 - `session.create`, `session.list`, `session.get`, `session.history`
 - `session.send`, `session.cancel`, `session.stop`
 - `session.subscribe`, `session.unsubscribe`
@@ -81,12 +83,26 @@ out of conversation text. All Codex events remain in SQLite for history and
 diagnostics, but the live WebSocket forwards only status, meaningful item, error,
 assistant-text, and artifact events.
 
+`run.diff.get` takes `session_id` and `run_id`. It refreshes a running diff and
+returns the saved final review after completion. The diff service reads Git's
+index and worktree but never stages, stashes, commits, or resets user files.
+Only one run can be active in a workspace at a time, so simultaneous sessions
+do not produce overlapping change reviews. The new `run_diffs` table is created
+on startup without altering existing tables; runs recorded before this feature
+report that no diff was captured.
+
+The workspace Git actions require a workspace at the repository root on the
+`main` branch, with no active run. Stage executes `git add .`; commit requires a
+message and executes `git commit -m <message>`; push executes
+`git push -u origin main`. Commands run without a shell, and push uses the
+machine's existing Git credentials. No branch is created automatically.
+
 ## Checks
 
 ```sh
 .venv/bin/pytest -q
-.venv/bin/ruff format --check main.py settings.py event_broker.py agent_runtime.py codebase_map.py database tests
-.venv/bin/ruff check main.py settings.py event_broker.py agent_runtime.py codebase_map.py database tests
+.venv/bin/ruff format --check main.py settings.py event_broker.py agent_runtime.py codebase_map.py run_diffs.py database tests
+.venv/bin/ruff check main.py settings.py event_broker.py agent_runtime.py codebase_map.py run_diffs.py database tests
 ```
 
 The tests use small subprocess adapters and never consume a Codex subscription.

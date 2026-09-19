@@ -78,6 +78,10 @@ class WorkspaceRename(WorkspaceIdParams):
     name: str = Field(min_length=1, max_length=200)
 
 
+class GitCommitParams(WorkspaceIdParams):
+    message: str = Field(min_length=1, max_length=500)
+
+
 class SessionCreate(BaseModel):
     workspace_id: int = Field(gt=0)
     provider: AgentProvider = "codex"
@@ -85,6 +89,10 @@ class SessionCreate(BaseModel):
 
 class SessionIdParams(BaseModel):
     session_id: int = Field(gt=0)
+
+
+class RunDiffParams(SessionIdParams):
+    run_id: int = Field(gt=0)
 
 
 class SessionHistoryParams(SessionIdParams):

@@ -40,12 +40,19 @@ Codex to explain the codebase or architecture) to create a saved, interactive
 component map. Map generation is part of that Codex run, so it does not launch a
 second agent request. The map only links to files that exist in the workspace.
 
+For Git workspaces, each new run also captures a read-only before/after file diff.
+The Work panel offers **Review changes** as files change, and the user prompt in
+chat links to that run's saved final review. Pre-existing edits are excluded;
+changes made by other processes during the run may still appear. Binary and very
+large files are listed without a text preview. Older runs and non-Git folders
+have no saved Git diff.
+
 ## Checks
 
 ```sh
 cd backend
 .venv/bin/pytest -q
-.venv/bin/ruff check main.py settings.py event_broker.py agent_runtime.py codebase_map.py database tests
+.venv/bin/ruff check main.py settings.py event_broker.py agent_runtime.py codebase_map.py run_diffs.py database tests
 
 cd ../frontend
 npm run build

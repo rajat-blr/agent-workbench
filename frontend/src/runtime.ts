@@ -4,14 +4,17 @@ export type RunStatus = 'queued' | Exclude<SessionStatus, 'idle'>
 export type MessageRole = 'user' | 'assistant'
 
 export type Workspace = { id: number; path: string; name: string; created_at?: string | null }
+export type GitStatus = { is_repository: boolean; is_root: boolean; branch: string | null; dirty_count: number; staged_count: number; unstaged_count: number }
 export type Session = { id: number; workspace_id: number; provider: 'codex'; status: SessionStatus; title?: string | null; created_at?: string | null; updated_at?: string | null }
 export type Run = { id: number; session_id: number; status: RunStatus; prompt: string; pid: number | null; return_code: number | null; error: string | null; created_at: string; started_at: string | null; completed_at: string | null }
-export type Message = { role: MessageRole; content: string }
+export type Message = { role: MessageRole; content: string; run_id?: number | null }
 export type StoredMessage = Message & { id: number; run_id: number | null; created_at: string }
 export type ActivityEvent = { id?: number; run_id?: number | null; type: string; payload: { content?: string; [key: string]: unknown }; sequence?: number; created_at?: string }
 export type StoredActivityEvent = ActivityEvent & { id: number; run_id: number | null; sequence: number; created_at: string }
 export type SessionHistory = { session: Session; conversation: StoredMessage[]; events: StoredActivityEvent[]; last_sequence: number; has_more: boolean }
 export type CodebaseMap = { nodes: { id: string; label: string; summary: string; files: string[] }[]; edges: { source: string; target: string; label: string }[] }
+export type RunDiffFile = { path: string; status: 'added' | 'modified' | 'deleted'; added: number; deleted: number; patch: string; note: string | null; final_hash: string | null }
+export type RunDiff = { run_id: number; status: 'capturing' | 'ready' | 'unavailable'; final: boolean; reason: string | null; files: RunDiffFile[]; file_count: number; added: number; deleted: number; captured_at: string | null; stale: boolean | null; decision?: 'accepted' | 'reverted' | null; can_revert?: boolean }
 export type RpcResponse<T> = { jsonrpc: '2.0'; id: number | string | null; result?: T; error?: { code: number; message: string; data?: unknown } }
 
 type EventHandler = (event: ActivityEvent & { session_id: number }) => void

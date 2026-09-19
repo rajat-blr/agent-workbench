@@ -1,7 +1,9 @@
 import asyncio
 import json
 import os
+import re
 import secrets
+import subprocess
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,8 +12,10 @@ from typing import Any
 from agent_runtime import AgentRuntimeManager, CodexAgentAdapter
 from database import Base, SessionLocal, engine, get_db, models
 from database.schemas import (
+    GitCommitParams,
     MessageRecord,
     RpcRequest,
+    RunDiffParams,
     SessionCreate,
     SessionEventRecord,
     SessionHistoryParams,
@@ -36,6 +40,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
+from run_diffs import RunDiffService
 from settings import settings
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -89,20 +94,65 @@ async def _git_status(path: str) -> dict[str, Any]:
             process.kill()
             await process.communicate()
             return 1, ""
-        return process.returncode or 0, stdout.decode(errors="replace").strip()
+        return process.returncode or 0, stdout.decode(errors="replace").rstrip("\n")
 
     return_code, _ = await run("rev-parse", "--is-inside-work-tree")
     if return_code:
-        return {"is_repository": False, "branch": None, "dirty_count": 0}
+        return {
+            "is_repository": False,
+            "is_root": False,
+            "branch": None,
+            "dirty_count": 0,
+            "staged_count": 0,
+            "unstaged_count": 0,
+        }
+    _, repo_root = await run("rev-parse", "--show-toplevel")
     _, branch = await run("branch", "--show-current")
     if not branch:
         _, branch = await run("rev-parse", "--short", "HEAD")
     _, changes = await run("status", "--porcelain")
+    changed_lines = changes.splitlines() if changes else []
     return {
         "is_repository": True,
+        "is_root": Path(repo_root).resolve() == Path(path).resolve(),
         "branch": branch or "unknown",
-        "dirty_count": len(changes.splitlines()) if changes else 0,
+        "dirty_count": len(changed_lines),
+        "staged_count": sum(
+            line[0] not in {" ", "?"} for line in changed_lines if line
+        ),
+        "unstaged_count": sum(
+            line[:2] == "??" or (len(line) > 1 and line[1] != " ")
+            for line in changed_lines
+            if line
+        ),
     }
+
+
+async def _run_git_action(path: str, *arguments: str) -> str:
+    environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "git",
+            "-C",
+            path,
+            *arguments,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=environment,
+        )
+    except FileNotFoundError as exc:
+        raise RpcMethodError(-32030, "Git is not installed") from exc
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
+    except TimeoutError as exc:
+        process.kill()
+        await process.communicate()
+        raise RpcMethodError(-32030, "Git command timed out") from exc
+    output = (stdout + b"\n" + stderr).decode(errors="replace").strip()
+    output = re.sub(r"(https?://)[^\s/@]+:[^\s/@]+@", r"\1***@", output)[:1500]
+    if process.returncode:
+        raise RpcMethodError(-32030, output or "Git command failed")
+    return output
 
 
 def _params(model: type[BaseModel], values: dict[str, Any]) -> BaseModel:
@@ -117,8 +167,12 @@ class RpcMethodError(Exception):
 
 
 class RpcDispatcher:
-    def __init__(self, runtime: AgentRuntimeManager) -> None:
+    def __init__(
+        self, runtime: AgentRuntimeManager, diff_service: RunDiffService | None = None
+    ) -> None:
         self.runtime = runtime
+        self.diff_service = diff_service
+        self._workspace_locks: dict[int, asyncio.Lock] = {}
 
     async def dispatch(self, request: RpcRequest, db: AsyncSession) -> dict[str, Any]:
         try:
@@ -215,6 +269,62 @@ class RpcDispatcher:
             values = _params(WorkspaceIdParams, params)
             workspace = await self._workspace(db, values.workspace_id)
             return await _git_status(workspace.path)
+        if method in {
+            "workspace.git_stage",
+            "workspace.git_commit",
+            "workspace.git_push_main",
+        }:
+            values = _params(
+                GitCommitParams
+                if method == "workspace.git_commit"
+                else WorkspaceIdParams,
+                params,
+            )
+            workspace = await self._workspace(db, values.workspace_id)
+            async with self._workspace_locks.setdefault(workspace.id, asyncio.Lock()):
+                await db.rollback()
+                workspace = await self._workspace(db, values.workspace_id)
+                if await self._has_active_run(db, workspace_id=workspace.id):
+                    raise RpcMethodError(
+                        -32010, "Wait for the active run to finish before using Git"
+                    )
+                status = await _git_status(workspace.path)
+                if not status["is_repository"]:
+                    raise RpcMethodError(
+                        -32030, "This workspace is not a Git repository"
+                    )
+                if not status["is_root"]:
+                    raise RpcMethodError(
+                        -32030,
+                        "Select the repository root as the workspace to use Git actions",
+                    )
+                if status["branch"] != "main":
+                    raise RpcMethodError(
+                        -32030, "Switch to the main branch before using Git actions"
+                    )
+                if method == "workspace.git_stage":
+                    output = await _run_git_action(workspace.path, "add", ".")
+                    action = "staged"
+                elif method == "workspace.git_commit":
+                    message = values.message.strip()
+                    if not message:
+                        raise ValueError("Commit message is required")
+                    if not status["staged_count"]:
+                        raise RpcMethodError(-32030, "Stage changes before committing")
+                    output = await _run_git_action(
+                        workspace.path, "commit", "-m", message
+                    )
+                    action = "committed"
+                else:
+                    output = await _run_git_action(
+                        workspace.path, "push", "-u", "origin", "main"
+                    )
+                    action = "pushed"
+                return {
+                    "action": action,
+                    "output": output,
+                    "status": await _git_status(workspace.path),
+                }
         if method == "workspace.delete":
             values = _params(WorkspaceIdParams, params)
             workspace = await self._workspace(db, values.workspace_id)
@@ -302,6 +412,54 @@ class RpcDispatcher:
                 last_sequence=events[-1].id if events else values.after_sequence,
                 has_more=has_more,
             ).model_dump(mode="json")
+        if method == "run.diff.get":
+            values = _params(RunDiffParams, params)
+            run = await db.get(models.Run, values.run_id)
+            if not run or run.session_id != values.session_id:
+                raise RpcMethodError(-32004, "Run not found in this session")
+            if not self.diff_service:
+                raise RpcMethodError(-32011, "Diff service is unavailable")
+            await self.diff_service.refresh(
+                run.id, final=run.status not in {"queued", "running", "stopping"}
+            )
+            result = await self.diff_service.get(run.id)
+            return result or {
+                "run_id": run.id,
+                "status": "unavailable",
+                "final": True,
+                "reason": "A diff was not captured for this earlier run",
+                "files": [],
+                "file_count": 0,
+                "added": 0,
+                "deleted": 0,
+                "captured_at": None,
+            }
+        if method in {"run.diff.accept", "run.diff.revert"}:
+            values = _params(RunDiffParams, params)
+            run = await db.get(models.Run, values.run_id)
+            if not run or run.session_id != values.session_id:
+                raise RpcMethodError(-32004, "Run not found in this session")
+            if not self.diff_service:
+                raise RpcMethodError(-32011, "Diff service is unavailable")
+            session = await self._session(db, values.session_id)
+            workspace_id = session.workspace_id
+            async with self._workspace_locks.setdefault(workspace_id, asyncio.Lock()):
+                await db.rollback()
+                if await self._has_active_run(db, workspace_id=workspace_id):
+                    raise RpcMethodError(
+                        -32010,
+                        "Wait for the active run to finish before reviewing changes",
+                    )
+                try:
+                    result = await self.diff_service.decide(
+                        values.run_id,
+                        "accept" if method.endswith("accept") else "revert",
+                    )
+                except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                    raise RpcMethodError(-32012, str(exc)[:300]) from exc
+                if not result:
+                    raise RpcMethodError(-32004, "No review was captured for this run")
+                return result
         if method == "session.send":
             values = _params(SessionSend, params)
             content = values.content.strip()
@@ -311,41 +469,51 @@ class RpcDispatcher:
             workspace = await db.get(models.Workspace, session.workspace_id)
             if not workspace:
                 raise RpcMethodError(-32004, "Workspace not found")
-            active_run = await db.scalar(
-                select(models.Run.id).where(
-                    models.Run.session_id == session.id,
-                    models.Run.status.in_(("queued", "running", "stopping")),
+            async with self._workspace_locks.setdefault(workspace.id, asyncio.Lock()):
+                # The initial lookup may predate another run that held this lock.
+                await db.rollback()
+                session = await self._session(db, values.session_id)
+                workspace = await self._workspace(db, session.workspace_id)
+                if await self._has_active_run(db, workspace_id=workspace.id):
+                    raise RpcMethodError(
+                        -32010, "Another run is active in this workspace"
+                    )
+                run = models.Run(session_id=session.id, status="queued", prompt=content)
+                db.add(run)
+                await db.flush()
+                db.add(
+                    models.Message(
+                        session_id=session.id,
+                        run_id=run.id,
+                        role="user",
+                        content=content,
+                    )
                 )
-            )
-            if active_run:
-                raise RpcMethodError(-32010, "A run is already active for this session")
-            run = models.Run(session_id=session.id, status="queued", prompt=content)
-            db.add(run)
-            await db.flush()
-            db.add(
-                models.Message(
-                    session_id=session.id, run_id=run.id, role="user", content=content
-                )
-            )
-            session.status = "running"
-            if not session.title:
-                session.title = content[:80]
-            await db.commit()
-            try:
-                await self.runtime.start(
-                    session.id,
-                    run.id,
-                    workspace.path,
-                    content,
-                    session.codex_thread_id,
-                    mode=values.mode,
-                )
-            except Exception as exc:
-                await mark_run_start_failed(session.id, run.id, str(exc))
-                if isinstance(exc, RuntimeError) and str(exc).startswith("Codex CLI"):
-                    raise RpcMethodError(-32020, str(exc)) from exc
-                raise RpcMethodError(-32020, "Codex could not be started") from exc
-            return {"accepted": True, "session_id": session.id, "run_id": run.id}
+                session.status = "running"
+                if not session.title:
+                    session.title = content[:80]
+                await db.commit()
+                if self.diff_service:
+                    await self.diff_service.capture(run.id, workspace.path)
+                try:
+                    await self.runtime.start(
+                        session.id,
+                        run.id,
+                        workspace.path,
+                        content,
+                        session.codex_thread_id,
+                        mode=values.mode,
+                    )
+                except Exception as exc:
+                    await mark_run_start_failed(session.id, run.id, str(exc))
+                    if self.diff_service:
+                        await self.diff_service.refresh(run.id, final=True)
+                    if isinstance(exc, RuntimeError) and str(exc).startswith(
+                        "Codex CLI"
+                    ):
+                        raise RpcMethodError(-32020, str(exc)) from exc
+                    raise RpcMethodError(-32020, "Codex could not be started") from exc
+                return {"accepted": True, "session_id": session.id, "run_id": run.id}
         if method in {"session.cancel", "session.stop"}:
             values = _params(SessionIdParams, params)
             await self._session(db, values.session_id)
@@ -443,6 +611,13 @@ async def mark_run_start_failed(session_id: int, run_id: int, error: str) -> Non
 async def reconcile_interrupted_runs() -> None:
     async with SessionLocal() as db:
         now = datetime.now(UTC)
+        interrupted_run_ids = (
+            await db.scalars(
+                select(models.Run.id).where(
+                    models.Run.status.in_(("queued", "running", "stopping"))
+                )
+            )
+        ).all()
         await db.execute(
             update(models.Run)
             .where(models.Run.status.in_(("queued", "running", "stopping")))
@@ -457,6 +632,18 @@ async def reconcile_interrupted_runs() -> None:
             .where(models.Session.status.in_(("running", "stopping")))
             .values(status="failed", updated_at=now)
         )
+        if interrupted_run_ids:
+            await db.execute(
+                update(models.RunDiff)
+                .where(models.RunDiff.run_id.in_(interrupted_run_ids))
+                .values(
+                    status="unavailable",
+                    reason="Backend stopped before the run diff was finalized",
+                    baseline=None,
+                    final=True,
+                    updated_at=now,
+                )
+            )
         await db.commit()
 
 
@@ -474,12 +661,17 @@ async def lifespan(app: FastAPI):
         sandbox=settings.agent_sandbox,
         skip_git_repo_check=settings.codex_skip_git_repo_check,
     )
+    diff_service = RunDiffService(SessionLocal)
     runtime = AgentRuntimeManager(
-        broker, adapter, persist_event, timeout_seconds=settings.agent_timeout_seconds
+        broker,
+        adapter,
+        persist_event,
+        timeout_seconds=settings.agent_timeout_seconds,
+        diff_finalizer=lambda run_id: diff_service.refresh(run_id, final=True),
     )
     app.state.broker = broker
     app.state.runtime = runtime
-    app.state.dispatcher = RpcDispatcher(runtime)
+    app.state.dispatcher = RpcDispatcher(runtime, diff_service)
     yield
     await runtime.shutdown()
     await engine.dispose()

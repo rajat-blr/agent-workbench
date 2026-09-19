@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import signal
 from collections.abc import Awaitable, Callable
@@ -13,6 +14,8 @@ from event_broker import AgentEvent, EventBroker
 EventPersister = Callable[
     [int, int, str, dict[str, Any], str | None], Awaitable[AgentEvent]
 ]
+DiffFinalizer = Callable[[int], Awaitable[dict[str, Any] | None]]
+logger = logging.getLogger(__name__)
 
 
 class AgentAdapter(Protocol):
@@ -138,11 +141,13 @@ class AgentRuntimeManager:
         adapter: AgentAdapter,
         persist_event: EventPersister,
         timeout_seconds: int = 3600,
+        diff_finalizer: DiffFinalizer | None = None,
     ) -> None:
         self.broker = broker
         self.adapter = adapter
         self.persist_event = persist_event
         self.timeout_seconds = timeout_seconds
+        self.diff_finalizer = diff_finalizer
         self._agents: dict[int, RunningAgent] = {}
         self._cancelled: set[int] = set()
         self._lock = asyncio.Lock()
@@ -360,6 +365,30 @@ class AgentRuntimeManager:
             await asyncio.gather(
                 agent.output_task, agent.error_task, return_exceptions=True
             )
+            if self.diff_finalizer:
+                try:
+                    diff = await self.diff_finalizer(agent.run_id)
+                    if diff:
+                        await self._emit(
+                            session_id,
+                            agent.run_id,
+                            "artifact.run_diff",
+                            {
+                                key: diff[key]
+                                for key in (
+                                    "run_id",
+                                    "status",
+                                    "final",
+                                    "reason",
+                                    "file_count",
+                                    "added",
+                                    "deleted",
+                                )
+                            },
+                        )
+                except Exception:
+                    # Diff capture must never turn a completed Codex run into a failure.
+                    logger.exception("Could not finalize diff for run %s", agent.run_id)
             cancelled = session_id in self._cancelled
             if cancelled and agent.cancel_ready:
                 await agent.cancel_ready.wait()

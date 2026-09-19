@@ -56,6 +56,21 @@ async def test_sqlite_dispatch_and_durable_events(tmp_path, monkeypatch) -> None
             "session.send",
             {"session_id": session["id"], "content": "Inspect the project"},
         )
+        second_session = await dispatch(
+            dispatcher,
+            db,
+            "session.create",
+            {"workspace_id": workspace["id"], "provider": "codex"},
+        )
+        overlap = await dispatcher.dispatch(
+            RpcRequest(
+                id=2,
+                method="session.send",
+                params={"session_id": second_session["id"], "content": "Overlap"},
+            ),
+            db,
+        )
+        assert overlap["error"]["code"] == -32010
 
     run_id = sent["run_id"]
     assert runtime.started[0][0][:2] == (session["id"], run_id)
@@ -127,8 +142,11 @@ async def test_sqlite_dispatch_and_durable_events(tmp_path, monkeypatch) -> None
     assert renamed["name"] == "Renamed project"
     assert git_status == {
         "is_repository": False,
+        "is_root": False,
         "branch": None,
         "dirty_count": 0,
+        "staged_count": 0,
+        "unstaged_count": 0,
     }
     assert deleted_session == {"deleted": True, "session_id": session["id"]}
     assert deleted_workspace == {"deleted": True, "workspace_id": workspace["id"]}

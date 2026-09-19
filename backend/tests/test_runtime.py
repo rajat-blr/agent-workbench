@@ -181,3 +181,36 @@ async def test_runtime_enforces_timeout(tmp_path) -> None:
 
     assert persisted[-1].payload["error"].startswith("Codex exceeded")
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_runtime_saves_final_diff_before_run_completion(tmp_path) -> None:
+    persisted: list[AgentEvent] = []
+
+    async def finish_diff(run_id: int):
+        return {
+            "run_id": run_id,
+            "status": "ready",
+            "final": True,
+            "reason": None,
+            "file_count": 1,
+            "added": 2,
+            "deleted": 1,
+        }
+
+    runtime = AgentRuntimeManager(
+        EventBroker(),
+        ScriptAdapter("print('')"),
+        event_persister(persisted),
+        timeout_seconds=2,
+        diff_finalizer=finish_diff,
+    )
+    await runtime.start(1, 7, str(tmp_path), "edit")
+    while not persisted or persisted[-1].type != "session.completed":
+        await asyncio.sleep(0.01)
+    assert [event.type for event in persisted[-2:]] == [
+        "artifact.run_diff",
+        "session.completed",
+    ]
+    assert persisted[-2].payload["file_count"] == 1
+    await runtime.shutdown()
