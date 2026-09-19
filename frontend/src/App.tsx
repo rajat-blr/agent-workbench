@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Activity, AlertCircle, ChevronDown, CircleDot, Folder, FolderPlus, GitBranch,
-  LoaderCircle, MessageSquarePlus, MoreHorizontal, PanelLeftClose, PanelLeftOpen,
-  Pencil, Play, Plus, RefreshCw, Send, Settings2, Square, Terminal, Trash2,
-  Wifi, WifiOff, X,
+  Activity, AlertCircle, ChevronDown, Folder, FolderPlus, GitBranch,
+  LoaderCircle, Map, MessageSquarePlus, MoreHorizontal, PanelLeftClose, PanelLeftOpen,
+  Pencil, Plus, RefreshCw, Send, Settings2, Square, Terminal, Trash2,
+  WifiOff, X,
 } from 'lucide-react'
 import './App.css'
+import { CodebaseMapView } from './CodebaseMapView'
+import { WorkPanel } from './WorkPanel'
 import { rpcClient } from './runtime'
 import type { ActivityEvent, ConnectionStatus, Message, Session, SessionHistory, SessionStatus, Workspace } from './runtime'
+import { summarizeWork } from './workSummary'
 
 type GitStatus = { is_repository: boolean; branch: string | null; dirty_count: number }
 
@@ -28,6 +31,18 @@ function sessionTone(status: SessionStatus) {
   return status === 'running' ? 'is-running' : status === 'failed' ? 'is-failed' : status === 'completed' ? 'is-complete' : ''
 }
 
+async function fetchFullHistory(sessionId: number, afterSequence = 0): Promise<SessionHistory> {
+  const history = await rpcClient.request<SessionHistory>('session.history', { session_id: sessionId, after_sequence: afterSequence, limit: 2000 })
+  while (history.has_more) {
+    const page = await rpcClient.request<SessionHistory>('session.history', { session_id: sessionId, after_sequence: history.last_sequence, limit: 2000 })
+    if (page.last_sequence <= history.last_sequence) throw new Error('Session history did not advance')
+    history.events.push(...page.events)
+    history.last_sequence = page.last_sequence
+    history.has_more = page.has_more
+  }
+  return history
+}
+
 function App() {
   const [connection, setConnection] = useState<ConnectionStatus>('connecting')
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
@@ -41,6 +56,7 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('sidebarCollapsed') === 'true')
   const [showSettings, setShowSettings] = useState(false)
   const [showEnvironment, setShowEnvironment] = useState(false)
+  const [showMap, setShowMap] = useState(false)
   const [workspaceMenuId, setWorkspaceMenuId] = useState<number | null>(null)
   const [sessionMenuId, setSessionMenuId] = useState<number | null>(null)
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null)
@@ -65,6 +81,7 @@ function App() {
   const live = connection === 'connected'
   const currentSession = sessions.find((session) => session.id === activeSession.id) ?? activeSession
   const groupedSessions = useMemo(() => sessions.filter((session) => session.workspace_id === activeWorkspace.id), [sessions, activeWorkspace.id])
+  const workSummary = useMemo(() => summarizeWork(events, currentSession.status), [events, currentSession.status])
 
   useEffect(() => {
     rpcClient.onStatus(setConnection)
@@ -128,7 +145,7 @@ function App() {
       const afterSequence = lastSequenceRef.current
       try {
         await rpcClient.request('session.subscribe', { session_id: activeSession.id })
-        const history = await rpcClient.request<SessionHistory>('session.history', { session_id: activeSession.id, after_sequence: afterSequence })
+        const history = await fetchFullHistory(activeSession.id, afterSequence)
         setMessages(history.conversation)
         setEvents((current) => afterSequence === 0 ? history.events : [...current, ...history.events.filter((event) => !current.some((item) => item.sequence === event.sequence))])
         lastSequenceRef.current = Math.max(lastSequenceRef.current, history.last_sequence)
@@ -156,7 +173,7 @@ function App() {
   const selectSession = (session: Session) => {
     const workspace = workspaces.find((item) => item.id === session.workspace_id)
     if (workspace) setActiveWorkspace(workspace)
-    lastSequenceRef.current = 0; setMessages([]); setEvents([]); setActiveSession(session); setSessionMenuId(null)
+    lastSequenceRef.current = 0; setMessages([]); setEvents([]); setShowMap(false); setActiveSession(session); setSessionMenuId(null)
   }
 
   const selectWorkspace = (workspace: Workspace) => {
@@ -223,13 +240,15 @@ function App() {
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not delete session.') }
   }
 
-  const sendPrompt = async () => {
-    const content = prompt.trim()
+  const sendPrompt = async (contentOverride?: string, modeOverride?: 'chat' | 'map') => {
+    const content = (contentOverride ?? prompt).trim()
     if (!content || !live) return
     if (!sessions.some((session) => session.id === activeSession.id && session.workspace_id === activeWorkspace.id)) { setError('Create or select a session in this workspace before sending a prompt.'); return }
+    const mode = modeOverride ?? (/\b(explain|map|diagram)\b.*\b(codebase|architecture|project)\b/i.test(content) ? 'map' : 'chat')
     try {
-      await rpcClient.request('session.send', { session_id: activeSession.id, content })
-      setPrompt(''); setMessages((current) => [...current, { role: 'user', content }])
+      await rpcClient.request('session.send', { session_id: activeSession.id, content, mode })
+      if (!contentOverride) setPrompt('')
+      setShowMap(false); setMessages((current) => [...current, { role: 'user', content }])
       setActiveSession((session) => ({ ...session, status: 'running', title: session.title || content.slice(0, 80) }))
       setSessions((current) => current.map((session) => session.id === activeSession.id ? { ...session, status: 'running', title: session.title || content.slice(0, 80) } : session))
       setError(null)
@@ -246,7 +265,7 @@ function App() {
     if (!live || !currentSession.id) return
     setSyncing(true)
     try {
-      const history = await rpcClient.request<SessionHistory>('session.history', { session_id: currentSession.id, after_sequence: 0 })
+      const history = await fetchFullHistory(currentSession.id)
       setMessages(history.conversation); setEvents(history.events); setActiveSession(history.session)
       setSessions((current) => current.map((session) => session.id === history.session.id ? history.session : session))
       lastSequenceRef.current = history.last_sequence; setError(null)
@@ -259,6 +278,13 @@ function App() {
     try { await rpcClient.request('health.check'); setError(null) }
     catch { setError('The backend health check failed.') }
     finally { setCheckingBackend(false) }
+  }
+
+  const revealMapFile = async (file: string) => {
+    try {
+      if (window.desktop) await window.desktop.revealWorkspaceFile(activeWorkspace.path, file)
+      else await navigator.clipboard.writeText(`${activeWorkspace.path}/${file}`)
+    } catch { setError('Could not reveal this file.') }
   }
 
   const displayedWorkspaces = workspaces.length ? workspaces : live ? [] : [demoWorkspace]
@@ -305,15 +331,16 @@ function App() {
             {messages.length === 0 ? <div className="empty-conversation"><div className="empty-icon"><MessageSquarePlus size={22} /></div><h2>{activeWorkspace.id ? 'Start a work session' : 'Add a workspace'}</h2><p>{activeWorkspace.id ? 'Ask Codex to inspect code, make a change, or explain what it finds.' : 'Choose a project folder to begin.'}</p>{!activeWorkspace.id && <button className="primary-action" onClick={() => void chooseWorkspace()}><FolderPlus size={14} /> Add workspace</button>}</div> : messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><div className="message-avatar">{message.role === 'user' ? 'YOU' : 'AI'}</div><div className="message-body"><div className="message-meta">{message.role === 'user' ? 'You' : 'Agent'} <span>{message.role === 'assistant' && '· live output'}</span></div><p>{message.content}</p></div></article>)}
             {currentSession.status === 'running' && <div className="thinking"><LoaderCircle size={15} className="spin" /> Agent is working <span className="thinking-dots">...</span></div>}
           </div></div>
-          <div className="composer-wrap"><div className="composer"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendPrompt() } }} placeholder="Ask Codex to work on your code..." rows={2} /><div className="composer-toolbar"><div className="composer-hints"><span><Terminal size={13} /> {activeWorkspace.name}</span><span>Enter to send · Shift+Enter for newline</span></div><button className="send-button" disabled={!prompt.trim() || !live || !currentSession.id || currentSession.status === 'running' || currentSession.status === 'stopping'} onClick={() => void sendPrompt()}>{live ? <Send size={15} /> : <WifiOff size={15} />} {live ? 'Send' : 'Offline'}</button></div></div><div className="composer-note">Codex runs with the workspace-write sandbox. Output is saved to session history.</div></div>
+          <div className="composer-wrap"><div className="composer"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendPrompt() } }} placeholder="Ask Codex to work on your code..." rows={2} /><div className="composer-toolbar"><div className="composer-hints"><span><Terminal size={13} /> {activeWorkspace.name}</span><span>Enter to send · Shift+Enter for newline</span></div><div className="composer-actions"><button className="map-action" disabled={!live || !currentSession.id || currentSession.status === 'running' || currentSession.status === 'stopping'} onClick={() => void sendPrompt('Explain this codebase and map its main components and data flow.', 'map')}><Map size={14} /> Map codebase</button><button className="send-button" disabled={!prompt.trim() || !live || !currentSession.id || currentSession.status === 'running' || currentSession.status === 'stopping'} onClick={() => void sendPrompt()}>{live ? <Send size={15} /> : <WifiOff size={15} />} {live ? 'Send' : 'Offline'}</button></div></div></div><div className="composer-note">Codex runs with the workspace-write sandbox. Output is saved to session history.</div></div>
         </section>
 
-        {showActivity && <aside className="activity-panel"><div className="activity-header"><div><span className="eyebrow">Runtime</span><h2>Activity</h2></div><button className="icon-button" aria-label="Hide activity" onClick={() => setShowActivity(false)}><PanelLeftClose size={16} /></button></div><div className="runtime-card"><div className="runtime-card-top"><span className="runtime-icon"><Play size={14} fill="currentColor" /></span><div><strong>{currentSession.provider}</strong><span>background process</span></div><CircleDot size={15} className={currentSession.status === 'running' ? 'pulse-icon' : 'muted-icon'} /></div><div className="runtime-stats"><span><small>STATUS</small>{currentSession.status}</span><span><small>EVENTS</small>{events.length || '—'}</span></div></div><div className="activity-feed"><div className="feed-label">LIVE FEED</div>{events.length === 0 ? <div className="feed-empty"><Wifi size={17} /><p>Waiting for runtime events.</p><small>Agent output will appear here.</small></div> : events.map((event, index) => <div className="feed-item" key={`${event.type}-${event.sequence ?? index}`}><span className="feed-line" /><div><strong>{event.type}</strong><p>{event.payload.content || 'Event received'}</p></div></div>)}</div><div className="panel-bottom"><button className="activity-toggle" disabled={!currentSession.id || syncing} onClick={() => void syncSession()}><RefreshCw size={13} className={syncing ? 'spin' : ''} /> {syncing ? 'Synchronizing…' : 'Sync activity'}</button></div></aside>}
+        {showActivity && <aside className="activity-panel"><div className="activity-header"><div><span className="eyebrow">Session</span><h2>Work</h2></div><button className="icon-button" aria-label="Hide work panel" onClick={() => setShowActivity(false)}><PanelLeftClose size={16} /></button></div><WorkPanel summary={workSummary} status={currentSession.status} syncing={syncing} canSync={Boolean(currentSession.id)} onSync={() => void syncSession()} onOpenMap={() => setShowMap(true)} /></aside>}
         {sidebarCollapsed && <button className="show-sidebar" onClick={() => setSidebarCollapsed(false)} aria-label="Show sidebar"><PanelLeftOpen size={16} /></button>}
         {!showActivity && <button className="show-activity" onClick={() => setShowActivity(true)} aria-label="Show activity"><Activity size={16} /></button>}
       </div>
 
       {showSettings && <div className="modal-backdrop" onClick={() => setShowSettings(false)}><section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><span className="eyebrow">Application</span><h2 id="settings-title">Settings & status</h2></div><button className="icon-button" aria-label="Close settings" onClick={() => setShowSettings(false)}><X size={16} /></button></div><div className="settings-list"><div><span>Backend</span><strong className={live ? 'healthy' : 'unhealthy'}>{statusLabel(connection)}</strong></div><div><span>Agent provider</span><strong>Codex</strong></div><div><span>Database</span><strong>SQLite · local</strong></div><div><span>Sandbox</span><strong>Workspace write</strong></div><div><span>Workspace</span><strong title={activeWorkspace.path}>{activeWorkspace.id ? activeWorkspace.name : 'None'}</strong></div></div><label className="setting-toggle"><input type="checkbox" checked={!sidebarCollapsed} onChange={(event) => setSidebarCollapsed(!event.target.checked)} /> Show workspace sidebar</label><label className="setting-toggle"><input type="checkbox" checked={showActivity} onChange={(event) => setShowActivity(event.target.checked)} /> Show activity panel</label><div className="modal-actions"><button className="secondary-action" disabled={!live || checkingBackend} onClick={() => void checkBackend()}><RefreshCw size={14} className={checkingBackend ? 'spin' : ''} /> Check backend</button><button className="primary-action" onClick={() => setShowSettings(false)}>Done</button></div></section></div>}
+      {showMap && workSummary.map && <CodebaseMapView map={workSummary.map} onClose={() => setShowMap(false)} onOpenFile={(file) => void revealMapFile(file)} />}
     </main>
   )
 }

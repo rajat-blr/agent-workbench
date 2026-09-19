@@ -7,6 +7,24 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from agent_runtime import AgentRuntimeManager, CodexAgentAdapter
+from database import Base, SessionLocal, engine, get_db, models
+from database.schemas import (
+    MessageRecord,
+    RpcRequest,
+    SessionCreate,
+    SessionEventRecord,
+    SessionHistoryParams,
+    SessionHistoryRecord,
+    SessionIdParams,
+    SessionRecord,
+    SessionSend,
+    WorkspaceCreate,
+    WorkspaceIdParams,
+    WorkspaceRecord,
+    WorkspaceRename,
+)
+from event_broker import AgentEvent, EventBroker
 from fastapi import (
     Depends,
     FastAPI,
@@ -18,49 +36,18 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
+from settings import settings
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agent_runtime import AgentRuntimeManager, CodexAgentAdapter
-from database import Base, SessionLocal, engine, get_db, models
-from database.schemas import (
-    RpcRequest,
-    SessionCreate,
-    SessionHistoryParams,
-    SessionIdParams,
-    SessionSend,
-    WorkspaceCreate,
-    WorkspaceIdParams,
-    WorkspaceRename,
-)
-from event_broker import AgentEvent, EventBroker
-from settings import settings
-
-
-def _timestamp(value: Any) -> str | None:
-    return value.isoformat() if value else None
-
 
 def _workspace_dict(workspace: models.Workspace) -> dict[str, Any]:
-    return {
-        "id": workspace.id,
-        "path": workspace.path,
-        "name": workspace.name,
-        "created_at": _timestamp(workspace.created_at),
-    }
+    return WorkspaceRecord.model_validate(workspace).model_dump(mode="json")
 
 
 def _session_dict(session: models.Session) -> dict[str, Any]:
-    return {
-        "id": session.id,
-        "workspace_id": session.workspace_id,
-        "provider": session.provider,
-        "status": session.status,
-        "title": session.title,
-        "created_at": _timestamp(session.created_at),
-        "updated_at": _timestamp(session.updated_at),
-    }
+    return SessionRecord.model_validate(session).model_dump(mode="json")
 
 
 def _rpc_result(request_id: int | str | None, result: Any) -> dict[str, Any]:
@@ -164,20 +151,23 @@ class RpcDispatcher:
             raise RpcMethodError(-32004, "Session not found")
         return session
 
-    async def _workspace(
-        self, db: AsyncSession, workspace_id: int
-    ) -> models.Workspace:
+    async def _workspace(self, db: AsyncSession, workspace_id: int) -> models.Workspace:
         workspace = await db.get(models.Workspace, workspace_id)
         if not workspace:
             raise RpcMethodError(-32004, "Workspace not found")
         return workspace
 
     async def _has_active_run(
-        self, db: AsyncSession, *, session_id: int | None = None,
+        self,
+        db: AsyncSession,
+        *,
+        session_id: int | None = None,
         workspace_id: int | None = None,
     ) -> bool:
-        query = select(models.Run.id).join(models.Session).where(
-            models.Run.status.in_(("queued", "running", "stopping"))
+        query = (
+            select(models.Run.id)
+            .join(models.Session)
+            .where(models.Run.status.in_(("queued", "running", "stopping")))
         )
         if session_id is not None:
             query = query.where(models.Run.session_id == session_id)
@@ -229,7 +219,9 @@ class RpcDispatcher:
             values = _params(WorkspaceIdParams, params)
             workspace = await self._workspace(db, values.workspace_id)
             if await self._has_active_run(db, workspace_id=workspace.id):
-                raise RpcMethodError(-32010, "Stop active sessions before removing this workspace")
+                raise RpcMethodError(
+                    -32010, "Stop active sessions before removing this workspace"
+                )
             await db.delete(workspace)
             await db.commit()
             return {"deleted": True, "workspace_id": values.workspace_id}
@@ -262,7 +254,9 @@ class RpcDispatcher:
             values = _params(SessionIdParams, params)
             session = await self._session(db, values.session_id)
             if await self._has_active_run(db, session_id=session.id):
-                raise RpcMethodError(-32010, "Stop the active run before deleting this session")
+                raise RpcMethodError(
+                    -32010, "Stop the active run before deleting this session"
+                )
             await db.delete(session)
             await db.commit()
             return {"deleted": True, "session_id": values.session_id}
@@ -289,32 +283,25 @@ class RpcDispatcher:
             ).all()
             has_more = len(events) > values.limit
             events = events[: values.limit]
-            return {
-                "session": _session_dict(session),
-                "conversation": [
-                    {
-                        "id": message.id,
-                        "run_id": message.run_id,
-                        "role": message.role,
-                        "content": message.content,
-                        "created_at": _timestamp(message.created_at),
-                    }
-                    for message in messages
+            return SessionHistoryRecord(
+                session=SessionRecord.model_validate(session),
+                conversation=[
+                    MessageRecord.model_validate(message) for message in messages
                 ],
-                "events": [
-                    {
-                        "id": event.id,
-                        "run_id": event.run_id,
-                        "sequence": event.id,
-                        "type": event.event_type,
-                        "payload": event.payload,
-                        "created_at": _timestamp(event.created_at),
-                    }
+                events=[
+                    SessionEventRecord(
+                        id=event.id,
+                        run_id=event.run_id,
+                        sequence=event.id,
+                        type=event.event_type,
+                        payload=event.payload,
+                        created_at=event.created_at,
+                    )
                     for event in events
                 ],
-                "last_sequence": events[-1].id if events else values.after_sequence,
-                "has_more": has_more,
-            }
+                last_sequence=events[-1].id if events else values.after_sequence,
+                has_more=has_more,
+            ).model_dump(mode="json")
         if method == "session.send":
             values = _params(SessionSend, params)
             content = values.content.strip()
@@ -346,7 +333,12 @@ class RpcDispatcher:
             await db.commit()
             try:
                 await self.runtime.start(
-                    session.id, run.id, workspace.path, content, session.codex_thread_id
+                    session.id,
+                    run.id,
+                    workspace.path,
+                    content,
+                    session.codex_thread_id,
+                    mode=values.mode,
                 )
             except Exception as exc:
                 await mark_run_start_failed(session.id, run.id, str(exc))

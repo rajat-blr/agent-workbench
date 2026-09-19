@@ -3,10 +3,21 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
+from .types import AgentProvider, MessageRole, RunStatus, SessionStatus
 
 
 class Workspace(Base):
@@ -26,13 +37,22 @@ class Workspace(Base):
 
 class Session(Base):
     __tablename__ = "sessions"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('idle', 'running', 'stopping', 'completed', 'failed', 'cancelled')",
+            name="session_status_valid",
+        ),
+        CheckConstraint("provider = 'codex'", name="session_provider_valid"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     workspace_id: Mapped[int] = mapped_column(
         ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
     )
-    provider: Mapped[str] = mapped_column(String(32), default="codex")
-    status: Mapped[str] = mapped_column(String(32), default="idle", index=True)
+    provider: Mapped[AgentProvider] = mapped_column(String(32), default="codex")
+    status: Mapped[SessionStatus] = mapped_column(
+        String(32), default="idle", index=True
+    )
     title: Mapped[str | None] = mapped_column(String(200), nullable=True)
     codex_thread_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -59,12 +79,18 @@ class Session(Base):
 
 class Run(Base):
     __tablename__ = "runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'stopping', 'completed', 'failed', 'cancelled')",
+            name="run_status_valid",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     session_id: Mapped[int] = mapped_column(
         ForeignKey("sessions.id", ondelete="CASCADE"), index=True
     )
-    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    status: Mapped[RunStatus] = mapped_column(String(32), default="queued", index=True)
     prompt: Mapped[str] = mapped_column(Text)
     pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
     return_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -86,6 +112,10 @@ class Run(Base):
 
 class Message(Base):
     __tablename__ = "messages"
+    __table_args__ = (
+        CheckConstraint("role IN ('user', 'assistant')", name="message_role_valid"),
+        Index("ix_messages_session_id_id", "session_id", "id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     session_id: Mapped[int] = mapped_column(
@@ -94,7 +124,7 @@ class Message(Base):
     run_id: Mapped[int | None] = mapped_column(
         ForeignKey("runs.id", ondelete="SET NULL"), nullable=True
     )
-    role: Mapped[str] = mapped_column(String(20))
+    role: Mapped[MessageRole] = mapped_column(String(20))
     content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

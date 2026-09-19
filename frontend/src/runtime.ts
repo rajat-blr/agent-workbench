@@ -1,11 +1,17 @@
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'reconnecting'
 export type SessionStatus = 'idle' | 'running' | 'stopping' | 'completed' | 'failed' | 'cancelled'
+export type RunStatus = 'queued' | Exclude<SessionStatus, 'idle'>
+export type MessageRole = 'user' | 'assistant'
 
 export type Workspace = { id: number; path: string; name: string; created_at?: string | null }
-export type Session = { id: number; workspace_id: number; provider: string; status: SessionStatus; title?: string | null; created_at?: string | null; updated_at?: string | null }
-export type Message = { role: 'user' | 'assistant'; content: string }
-export type ActivityEvent = { id?: number; type: string; payload: { content?: string; [key: string]: unknown }; sequence?: number; created_at?: string }
-export type SessionHistory = { session: Session; conversation: Message[]; events: ActivityEvent[]; last_sequence: number }
+export type Session = { id: number; workspace_id: number; provider: 'codex'; status: SessionStatus; title?: string | null; created_at?: string | null; updated_at?: string | null }
+export type Run = { id: number; session_id: number; status: RunStatus; prompt: string; pid: number | null; return_code: number | null; error: string | null; created_at: string; started_at: string | null; completed_at: string | null }
+export type Message = { role: MessageRole; content: string }
+export type StoredMessage = Message & { id: number; run_id: number | null; created_at: string }
+export type ActivityEvent = { id?: number; run_id?: number | null; type: string; payload: { content?: string; [key: string]: unknown }; sequence?: number; created_at?: string }
+export type StoredActivityEvent = ActivityEvent & { id: number; run_id: number | null; sequence: number; created_at: string }
+export type SessionHistory = { session: Session; conversation: StoredMessage[]; events: StoredActivityEvent[]; last_sequence: number; has_more: boolean }
+export type CodebaseMap = { nodes: { id: string; label: string; summary: string; files: string[] }[]; edges: { source: string; target: string; label: string }[] }
 export type RpcResponse<T> = { jsonrpc: '2.0'; id: number | string | null; result?: T; error?: { code: number; message: string; data?: unknown } }
 
 type EventHandler = (event: ActivityEvent & { session_id: number }) => void

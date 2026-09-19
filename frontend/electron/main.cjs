@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron')
 const { spawn } = require('node:child_process')
 const crypto = require('node:crypto')
 const fs = require('node:fs')
@@ -142,6 +142,27 @@ ipcMain.handle('desktop:backend-connection', () => ({
 ipcMain.handle('desktop:select-directory', async () => {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
   return result.canceled ? null : result.filePaths[0]
+})
+ipcMain.handle('desktop:reveal-workspace-file', async (_event, workspacePath, filePath) => {
+  if (typeof workspacePath !== 'string' || typeof filePath !== 'string' || path.isAbsolute(filePath)) {
+    throw new Error('Invalid workspace file')
+  }
+  const response = await fetch(`${backendUrl}/rpc`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${backendAuthToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 'reveal-file', method: 'workspace.list' }),
+  })
+  if (!response.ok) throw new Error('Could not verify workspace')
+  const result = await response.json()
+  if (!Array.isArray(result.result) || !result.result.some((workspace) => workspace.path === workspacePath)) {
+    throw new Error('Workspace is not registered')
+  }
+  const root = fs.realpathSync(workspacePath)
+  const target = fs.realpathSync(path.join(root, filePath))
+  if (!target.startsWith(`${root}${path.sep}`) || !fs.statSync(target).isFile()) {
+    throw new Error('File is outside the workspace')
+  }
+  shell.showItemInFolder(target)
 })
 
 app.whenReady().then(async () => {

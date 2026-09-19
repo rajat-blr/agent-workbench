@@ -3,8 +3,8 @@ import sys
 from datetime import UTC, datetime
 
 import pytest
-
 from agent_runtime import AgentRuntimeManager, CodexAgentAdapter
+from codebase_map import MAP_CLOSE, MAP_OPEN, extract_codebase_map
 from event_broker import AgentEvent, EventBroker
 
 
@@ -107,13 +107,60 @@ async def test_runtime_streams_codex_json_and_completes(tmp_path) -> None:
 
     assert [event.type for event in received] == [
         "session.started",
-        "codex.thread.started",
         "assistant.text",
-        "codex.turn.completed",
         "session.completed",
     ]
-    assert received[2].payload["content"] == "Done"
+    assert received[1].payload["content"] == "Done"
     assert [event.sequence for event in persisted] == [1, 2, 3, 4, 5]
+    await runtime.shutdown()
+
+
+def test_codebase_map_validates_files_and_relationships(tmp_path) -> None:
+    (tmp_path / "main.py").write_text("print('hello')")
+    content = (
+        "The entry point starts the app.\n"
+        f'{MAP_OPEN}{{"nodes":[{{"id":"app","label":"App","summary":"Entry point",'
+        '"files":["main.py","../secret.txt"]}],"edges":[]}'
+        f"{MAP_CLOSE}"
+    )
+    visible, map_data = extract_codebase_map(content, str(tmp_path))
+
+    assert visible == "The entry point starts the app."
+    assert map_data and map_data["nodes"][0]["files"] == ["main.py"]
+
+
+@pytest.mark.asyncio
+async def test_map_run_streams_saved_artifact_without_json_in_chat(tmp_path) -> None:
+    (tmp_path / "main.py").write_text("print('hello')")
+    map_content = (
+        "Here is the architecture.\n"
+        f'{MAP_OPEN}{{"nodes":[{{"id":"app","label":"App","summary":"Entry point",'
+        '"files":["main.py"]}],"edges":[]}'
+        f"{MAP_CLOSE}"
+    )
+    message = {
+        "type": "item.completed",
+        "item": {"id": "map-1", "type": "agent_message", "text": map_content},
+    }
+    script = f"import json; print(json.dumps({message!r}), flush=True)"
+    persisted: list[AgentEvent] = []
+    broker = EventBroker()
+    runtime = AgentRuntimeManager(
+        broker, ScriptAdapter(script), event_persister(persisted), timeout_seconds=2
+    )
+
+    await runtime.start(1, 1, str(tmp_path), "Explain this codebase", mode="map")
+    while not persisted or persisted[-1].type != "session.completed":
+        await asyncio.sleep(0.01)
+
+    assert [event.type for event in persisted] == [
+        "session.started",
+        "assistant.text",
+        "artifact.codebase_map",
+        "session.completed",
+    ]
+    assert persisted[1].payload["content"] == "Here is the architecture."
+    assert persisted[2].payload["nodes"][0]["files"] == ["main.py"]
     await runtime.shutdown()
 
 

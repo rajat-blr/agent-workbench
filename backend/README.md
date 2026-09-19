@@ -14,6 +14,24 @@ Electron overrides this with a database inside its application-data directory. S
 
 SQLite is configured with foreign keys, WAL mode, and a five-second busy timeout.
 
+The durable schema is defined in `database/models.py` and its Python record/response
+types in `database/schemas.py` and `database/types.py`:
+
+| Table | Stored data |
+| --- | --- |
+| `workspaces` | Unique local folder path, display name, creation time |
+| `sessions` | Workspace, Codex thread ID, title, status, timestamps |
+| `runs` | One prompt execution, process/status/error details, timestamps |
+| `messages` | Ordered user and assistant conversation text, linked to a run |
+| `session_events` | Ordered runtime events with a SQLite JSON payload, linked to a run |
+
+Conversation messages remain rows of text, not one large JSON document. Event payloads
+use SQLAlchemy's `JSON` type, which stores JSON text in SQLite. Session deletion
+cascades to its runs, messages, and events. New databases also enforce valid
+provider, status, and message-role values with SQLite check constraints. Since
+migrations are deferred, `create_all()` does not add those constraints to an
+already-existing database; existing data remains readable.
+
 ## Start manually
 
 The local API requires a secret. Use the same value in clients connecting to the WebSocket.
@@ -56,12 +74,19 @@ Supported methods:
 
 `session.history.after_sequence` uses the durable SQLite event ID. Clients should subscribe first, then request history so events produced during synchronization can be deduplicated safely.
 
+`session.send` accepts optional `mode: "map"` in addition to its default chat mode.
+Map runs ask Codex to include structured component data in its answer; the backend
+validates the data, saves it as an `artifact.codebase_map` event, and keeps the JSON
+out of conversation text. All Codex events remain in SQLite for history and
+diagnostics, but the live WebSocket forwards only status, meaningful item, error,
+assistant-text, and artifact events.
+
 ## Checks
 
 ```sh
 .venv/bin/pytest -q
-.venv/bin/ruff format --check main.py settings.py event_broker.py agent_runtime.py database tests
-.venv/bin/ruff check main.py settings.py event_broker.py agent_runtime.py database tests
+.venv/bin/ruff format --check main.py settings.py event_broker.py agent_runtime.py codebase_map.py database tests
+.venv/bin/ruff check main.py settings.py event_broker.py agent_runtime.py codebase_map.py database tests
 ```
 
 The tests use small subprocess adapters and never consume a Codex subscription.

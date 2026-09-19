@@ -34,12 +34,18 @@ npm --prefix frontend run dev
 
 Electron launches the backend, generates a random local authentication token, and passes the token only to the backend and renderer connection. Codex runs once per prompt with JSONL output and the `workspace-write` sandbox.
 
+The Work panel condenses each run into status, changed files, completed checks, and
+errors. Expand Technical details to inspect raw events. Use **Map codebase** (or ask
+Codex to explain the codebase or architecture) to create a saved, interactive
+component map. Map generation is part of that Codex run, so it does not launch a
+second agent request. The map only links to files that exist in the workspace.
+
 ## Checks
 
 ```sh
 cd backend
 .venv/bin/pytest -q
-.venv/bin/ruff check main.py settings.py event_broker.py agent_runtime.py database tests
+.venv/bin/ruff check main.py settings.py event_broker.py agent_runtime.py codebase_map.py database tests
 
 cd ../frontend
 npm run build

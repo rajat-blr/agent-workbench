@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from codebase_map import MAP_INSTRUCTIONS, extract_codebase_map
 from event_broker import AgentEvent, EventBroker
 
 EventPersister = Callable[
@@ -157,7 +158,21 @@ class AgentRuntimeManager:
         event = await self.persist_event(
             session_id, run_id, event_type, payload, source_event_id
         )
-        self.broker.publish(event)
+        item = payload.get("item")
+        meaningful_item = isinstance(item, dict) and item.get("type") in {
+            "command_execution",
+            "file_change",
+            "plan_update",
+        }
+        if (
+            event_type.startswith(("session.", "artifact."))
+            or event_type in {"assistant.text", "agent.error"}
+            or (
+                event_type in {"codex.item.started", "codex.item.completed"}
+                and meaningful_item
+            )
+        ):
+            self.broker.publish(event)
         return event
 
     async def start(
@@ -167,6 +182,8 @@ class AgentRuntimeManager:
         workspace_path: str,
         prompt: str,
         thread_id: str | None = None,
+        *,
+        mode: str = "chat",
     ) -> None:
         async with self._lock:
             existing = self._agents.get(session_id)
@@ -174,9 +191,12 @@ class AgentRuntimeManager:
                 raise RuntimeError("A run is already active for this session")
             if not Path(workspace_path).is_dir():
                 raise ValueError("Workspace path must be an existing directory")
-            process = await self.adapter.start(workspace_path, prompt, thread_id)
+            agent_prompt = prompt + MAP_INSTRUCTIONS if mode == "map" else prompt
+            process = await self.adapter.start(workspace_path, agent_prompt, thread_id)
             output_task = asyncio.create_task(
-                self._read_stdout(session_id, run_id, process.stdout)
+                self._read_stdout(
+                    session_id, run_id, process.stdout, workspace_path, mode
+                )
             )
             error_task = asyncio.create_task(
                 self._read_stderr(session_id, run_id, process.stderr)
@@ -188,7 +208,11 @@ class AgentRuntimeManager:
                     session_id,
                     run_id,
                     "session.started",
-                    {"pid": process.pid, "workspace_path": workspace_path},
+                    {
+                        "pid": process.pid,
+                        "workspace_path": workspace_path,
+                        "mode": mode,
+                    },
                 )
             except Exception:
                 self._terminate_process(process)
@@ -230,10 +254,16 @@ class AgentRuntimeManager:
             process.terminate()
 
     async def _read_stdout(
-        self, session_id: int, run_id: int, stream: asyncio.StreamReader | None
+        self,
+        session_id: int,
+        run_id: int,
+        stream: asyncio.StreamReader | None,
+        workspace_path: str,
+        mode: str,
     ) -> None:
         if not stream:
             return
+        map_emitted = False
         while line := await stream.readline():
             text = line.decode(errors="replace").rstrip("\r\n")
             try:
@@ -255,13 +285,28 @@ class AgentRuntimeManager:
                 and item.get("type") == "agent_message"
                 and isinstance(item.get("text"), str)
             ):
-                await self._emit(
-                    session_id,
-                    run_id,
-                    "assistant.text",
-                    {"content": item["text"], "item": item},
-                    source_event_id,
-                )
+                content = item["text"]
+                if mode == "map":
+                    content, map_data = extract_codebase_map(content, workspace_path)
+                else:
+                    map_data = None
+                if content:
+                    await self._emit(
+                        session_id,
+                        run_id,
+                        "assistant.text",
+                        {"content": content},
+                        source_event_id,
+                    )
+                if map_data:
+                    map_emitted = True
+                    await self._emit(
+                        session_id,
+                        run_id,
+                        "artifact.codebase_map",
+                        map_data,
+                        source_event_id,
+                    )
             else:
                 payload = {
                     key: value for key, value in message.items() if key != "type"
@@ -269,6 +314,13 @@ class AgentRuntimeManager:
                 await self._emit(
                     session_id, run_id, f"codex.{raw_type}", payload, source_event_id
                 )
+        if mode == "map" and not map_emitted:
+            await self._emit(
+                session_id,
+                run_id,
+                "artifact.map_unavailable",
+                {"reason": "Codex did not return a valid codebase map"},
+            )
 
     async def _read_stderr(
         self, session_id: int, run_id: int, stream: asyncio.StreamReader | None
