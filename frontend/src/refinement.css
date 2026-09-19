@@ -1,0 +1,195 @@
+/* The desktop UI uses T3 Code's current system-sans / system-mono font stacks,
+   while keeping Agent Workbench's own palette and layout. */
+:root {
+  --bg: #111314;
+  --panel: #151718;
+  --panel-raised: #1e2223;
+  --border: #2b3032;
+  --border-soft: #252a2c;
+  --text: #e9ebe9;
+  --muted: #a0a7a6;
+  --faint: #737d7c;
+  --mint: #a9cdb6;
+  --mono: var(--font-mono);
+}
+
+button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible, a:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: 2px;
+}
+
+.app-shell { background: var(--bg); }
+.topbar {
+  height: 52px;
+  padding: 0 18px 0 80px;
+  background: #17191a;
+  -webkit-app-region: drag;
+}
+.topbar button { -webkit-app-region: no-drag; }
+.brand-lockup {
+  width: auto;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  text-transform: none;
+}
+.topbar-actions { gap: 12px; }
+.connection-pill {
+  order: -1;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+}
+.connection-dot { width: 6px; height: 6px; box-shadow: none; }
+.topbar .icon-button { color: var(--muted); }
+
+.workspace-grid { grid-template-columns: 252px minmax(0, 1fr) 320px; height: calc(100vh - 52px); }
+.workspace-grid.sidebar-collapsed { grid-template-columns: minmax(0, 1fr) 320px; }
+.workspace-grid.activity-hidden { grid-template-columns: 252px minmax(0, 1fr); }
+.workspace-grid.sidebar-collapsed.activity-hidden { grid-template-columns: minmax(0, 1fr); }
+.sidebar, .activity-panel { background: var(--panel); }
+.sidebar { padding: 22px 10px 12px; }
+.sidebar-heading {
+  padding: 0 10px 9px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.workspace-list { margin-bottom: 20px; }
+.workspace-row, .session-row { min-height: 38px; border-radius: 7px; }
+.workspace-row { font-size: 12px; }
+.session-copy strong { font-size: 12px; font-weight: 500; }
+.session-copy small { color: var(--faint); font-family: var(--font-sans); font-size: 11px; }
+.sidebar-footer { border-color: var(--border); }
+.footer-link { font-size: 11px; }
+.row-menu button { font-size: 12px; }
+
+.main-panel { background: var(--bg); }
+.session-header {
+  align-items: center;
+  gap: 16px;
+  min-height: 91px;
+  padding: 17px 28px;
+  border-color: var(--border);
+}
+.session-header > div:first-child { min-width: 0; }
+.session-header h1 {
+  overflow: hidden;
+  margin: 5px 0 4px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.eyebrow { color: var(--faint); font-family: var(--font-sans); font-size: 11px; letter-spacing: 0; text-transform: none; }
+.path-line { overflow: hidden; font-family: var(--font-sans); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.path-line svg { flex: 0 0 auto; }
+.session-controls { flex: 0 0 auto; padding-top: 0; }
+.status-label { font-family: var(--font-sans); font-size: 11px; text-transform: capitalize; }
+.notice { margin: 14px 28px 0; font-size: 12px; }
+
+.conversation-inner { max-width: 800px; padding: 30px 32px 45px; }
+.message { display: block; margin-bottom: 34px; animation: none; }
+.message-meta { margin: 0 0 9px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.message-body { color: #d5dad7; font-size: 14px; line-height: 1.65; }
+.message-body > p { max-width: none; color: inherit; font-size: inherit; line-height: inherit; }
+.message.user { display: flex; flex-direction: column; align-items: flex-end; }
+.message.user .message-body { max-width: min(80%, 650px); padding: 12px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-raised); }
+.message.user .message-meta { margin-right: 3px; }
+.message.assistant .message-body { padding: 0 3px; }
+.thinking { margin-left: 3px; font-family: var(--font-sans); font-size: 12px; }
+.empty-conversation { padding: min(20vh, 150px) 0 40px; }
+.empty-conversation h2 { margin: 0 0 8px; font-size: 19px; font-weight: 600; letter-spacing: -.02em; }
+.empty-conversation p { font-size: 13px; }
+
+.markdown-body { overflow-wrap: anywhere; }
+.markdown-body > :first-child { margin-top: 0; }
+.markdown-body > :last-child { margin-bottom: 0; }
+.markdown-body p { max-width: none; margin: 0 0 13px; color: inherit; font-size: 14px; line-height: 1.65; white-space: normal; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3 { margin: 22px 0 9px; color: var(--text); font-weight: 600; line-height: 1.35; letter-spacing: -.02em; }
+.markdown-body h1 { font-size: 19px; }.markdown-body h2 { font-size: 17px; }.markdown-body h3 { font-size: 15px; }
+.markdown-body ul, .markdown-body ol { margin: 0 0 15px; padding-left: 21px; }
+.markdown-body li { margin: 5px 0; padding-left: 2px; }
+.markdown-body li > p { margin-bottom: 4px; }
+.markdown-body a { color: #a9c9e8; text-decoration: underline; text-underline-offset: 3px; }
+.markdown-body code { border-radius: 4px; padding: 2px 4px; background: #272d2e; color: #d8e5d7; font-family: var(--font-mono); font-size: .9em; }
+.markdown-body pre { overflow-x: auto; margin: 13px 0 17px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: #191d1e; line-height: 1.55; }
+.markdown-body pre code { padding: 0; background: none; color: #d9dfdc; font-size: 12px; }
+.markdown-body blockquote { margin: 12px 0; padding: 1px 0 1px 14px; border-left: 2px solid #62766a; color: var(--muted); }
+.markdown-body table { display: block; overflow-x: auto; width: max-content; max-width: 100%; margin: 12px 0 17px; border-collapse: collapse; font-size: 12px; }
+.markdown-body th, .markdown-body td { padding: 7px 10px; border: 1px solid var(--border); text-align: left; }
+.markdown-body th { color: var(--text); background: var(--panel-raised); }
+.markdown-body hr { border: 0; border-top: 1px solid var(--border); margin: 20px 0; }
+
+.composer-wrap { padding: 0 28px 24px; }
+.composer { border-color: #3a4242; border-radius: 10px; background: #1b1e1f; box-shadow: none; }
+.composer:focus-within { border-color: #849b89; }
+.composer textarea { min-height: 72px; padding: 14px 15px 5px; font-size: 14px; line-height: 1.5; }
+.composer-toolbar { padding: 8px 10px 10px 15px; }
+.composer-hints { color: var(--faint); font-family: var(--font-sans); font-size: 11px; }
+.map-action, .send-button { min-height: 30px; padding: 6px 10px; border-radius: 6px; font-size: 11px; }
+.map-action { background: transparent; }
+
+.activity-header { padding: 19px 18px 15px; }
+.activity-header h2 { margin: 4px 0 0; font-size: 15px; font-weight: 600; }
+.work-status-card { margin: 15px 18px 8px; padding: 0 0 14px; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: none; }
+.work-status-icon { width: 23px; height: 23px; background: none; }
+.work-status-card strong { font-size: 12px; }
+.work-status-card p { font-size: 11px; }
+.work-content { padding: 0 18px 26px; }
+.work-section { padding: 16px 0; }
+.work-section h3 { font-size: 12px; font-weight: 600; }
+.work-section p { font-size: 11px; }
+.work-section li { font-family: var(--font-sans); font-size: 11px; }
+.work-command-count { font-family: var(--font-sans); font-size: 11px; }
+.work-map-card { margin: 9px 0 15px; background: #1d2923; }
+.work-map-card strong { font-size: 12px; }
+.work-map-card small { font-family: var(--font-sans); font-size: 11px; }
+.review-diff-button, .git-action-buttons button { font-size: 11px; }
+.git-action-buttons { gap: 6px; }
+.git-action-buttons button { padding: 8px 5px; }
+.git-action-feedback { font-size: 10px; }
+.settings-list > div, .setting-toggle { font-size: 12px; }
+.settings-diagnostics { margin-top: 18px; padding-top: 13px; border-top: 1px solid var(--border); }
+.settings-diagnostics summary { color: var(--muted); cursor: pointer; font-size: 12px; }
+.settings-diagnostics > div { display: flex; gap: 8px; margin: 12px 0; }
+.settings-diagnostics p { color: var(--faint); font-size: 11px; }
+.secondary-action, .primary-action { font-size: 11px; }
+
+/* Change review opens as a contextual pane alongside the conversation. */
+.diff-backdrop { place-items: stretch end; padding: 0; background: rgba(5, 7, 8, .46); backdrop-filter: none; }
+.diff-modal { width: min(1060px, 76vw); height: 100vh; min-height: 0; border-radius: 0; border-top: 0; border-right: 0; border-bottom: 0; background: var(--panel); }
+.diff-modal-header { padding: 22px 24px 18px; }
+.diff-modal-header h2 { font-size: 19px; }
+.diff-modal-header p, .diff-file-heading span, .diff-file-note, .diff-modal-footer { font-size: 11px; }
+.diff-body { grid-template-columns: 220px minmax(0, 1fr); }
+.diff-file-list button span, .diff-file-heading strong, .diff-file-heading button { font-size: 11px; }
+.diff-file-list button small { font-size: 10px; }
+.diff-lines { font-size: 11px; }
+.diff-review-actions button { font-size: 11px; }
+
+.map-modal-header h2 { font-size: 19px; }
+.map-node strong { font-size: 12px; }
+.map-node p, .map-relations span { font-size: 11px; }
+.map-node-files button { font-size: 10px; }
+
+@media (max-width: 1180px) {
+  .workspace-grid, .workspace-grid.activity-hidden { grid-template-columns: 244px minmax(0, 1fr); }
+  .workspace-grid.sidebar-collapsed, .workspace-grid.sidebar-collapsed.activity-hidden { grid-template-columns: minmax(0, 1fr); }
+  .activity-panel { position: fixed; z-index: 10; top: 52px; right: 0; bottom: 0; display: flex; width: min(360px, calc(100vw - 244px)); box-shadow: -18px 0 45px rgba(0,0,0,.35); }
+  .workspace-grid.sidebar-collapsed .activity-panel { width: min(360px, 90vw); }
+}
+
+@media (max-width: 1020px) {
+  .session-header { padding: 15px 22px; }
+  .conversation-inner { padding: 25px 23px 40px; }
+  .composer-wrap { padding: 0 22px 20px; }
+  .diff-modal { width: min(860px, 90vw); }
+  .diff-body { grid-template-columns: 180px minmax(0, 1fr); }
+}

@@ -164,6 +164,12 @@ ipcMain.handle('desktop:reveal-workspace-file', async (_event, workspacePath, fi
   }
   shell.showItemInFolder(target)
 })
+ipcMain.handle('desktop:open-external', async (_event, value) => {
+  if (typeof value !== 'string') throw new Error('Invalid external URL')
+  const url = new URL(value)
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('Unsupported external URL')
+  await shell.openExternal(url.href)
+})
 
 app.whenReady().then(async () => {
   try {

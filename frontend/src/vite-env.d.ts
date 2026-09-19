@@ -5,5 +5,6 @@ interface Window {
     getBackendConnection: () => Promise<{ url: string; token: string }>
     selectDirectory: () => Promise<string | null>
     revealWorkspaceFile: (workspacePath: string, filePath: string) => Promise<void>
+    openExternal: (url: string) => Promise<void>
   }
 }

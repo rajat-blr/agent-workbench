@@ -1,34 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import {
-  Activity, AlertCircle, ChevronDown, Folder, FolderPlus, GitBranch,
-  LoaderCircle, Map, MessageSquarePlus, MoreHorizontal, PanelLeftClose, PanelLeftOpen,
-  Pencil, Plus, RefreshCw, Send, Settings2, Square, Terminal, Trash2,
-  WifiOff, X,
-} from 'lucide-react'
+import { Activity, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import './App.css'
+import './refinement.css'
+import { AppHeader } from './AppHeader'
 import { CodebaseMapView } from './CodebaseMapView'
+import { ConversationPane } from './ConversationPane'
 import { RunDiffView } from './RunDiffView'
+import { SettingsDialog } from './SettingsDialog'
 import { WorkPanel } from './WorkPanel'
+import { WorkspaceSidebar } from './WorkspaceSidebar'
 import { rpcClient } from './runtime'
 import type { ActivityEvent, ConnectionStatus, GitStatus, Message, RunDiff, Session, SessionHistory, SessionStatus, Workspace } from './runtime'
 import { summarizeWork } from './workSummary'
 
-const demoWorkspace: Workspace = { id: 1, name: 'agent-harness', path: '/Users/you/Documents/agent-harness' }
-const demoSession: Session = { id: 1, workspace_id: 1, provider: 'codex', status: 'running' }
 const emptyWorkspace: Workspace = { id: 0, name: 'No workspace selected', path: 'Add a workspace to begin' }
 const emptySession: Session = { id: 0, workspace_id: 0, provider: 'codex', status: 'idle' }
-const demoMessages: Message[] = [
-  { role: 'user', content: 'Trace the session lifecycle and show me where reconnect state should live.' },
-  { role: 'assistant', content: 'I am mapping the runtime boundary now. The process belongs to the environment server, while this window only holds a resumable client connection.' },
-]
-
-function statusLabel(status: ConnectionStatus) {
-  return { connected: 'Connected', connecting: 'Connecting', reconnecting: 'Reconnecting', disconnected: 'Offline' }[status]
-}
-
-function sessionTone(status: SessionStatus) {
-  return status === 'running' ? 'is-running' : status === 'failed' ? 'is-failed' : status === 'completed' ? 'is-complete' : ''
-}
 
 async function fetchFullHistory(sessionId: number, afterSequence = 0): Promise<SessionHistory> {
   const history = await rpcClient.request<SessionHistory>('session.history', { session_id: sessionId, after_sequence: afterSequence, limit: 2000 })
@@ -46,9 +32,9 @@ function App() {
   const [connection, setConnection] = useState<ConnectionStatus>('connecting')
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [sessions, setSessions] = useState<Session[]>([])
-  const [activeWorkspace, setActiveWorkspace] = useState<Workspace>(demoWorkspace)
-  const [activeSession, setActiveSession] = useState<Session>(demoSession)
-  const [messages, setMessages] = useState<Message[]>(demoMessages)
+  const [activeWorkspace, setActiveWorkspace] = useState<Workspace>(emptyWorkspace)
+  const [activeSession, setActiveSession] = useState<Session>(emptySession)
+  const [messages, setMessages] = useState<Message[]>([])
   const [events, setEvents] = useState<ActivityEvent[]>([])
   const [runDiff, setRunDiff] = useState<RunDiff | null>(null)
   const [reviewDiff, setReviewDiff] = useState<RunDiff | null>(null)
@@ -56,7 +42,6 @@ function App() {
   const [showActivity, setShowActivity] = useState(() => localStorage.getItem('showActivity') !== 'false')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('sidebarCollapsed') === 'true')
   const [showSettings, setShowSettings] = useState(false)
-  const [showEnvironment, setShowEnvironment] = useState(false)
   const [showMap, setShowMap] = useState(false)
   const [workspaceMenuId, setWorkspaceMenuId] = useState<number | null>(null)
   const [sessionMenuId, setSessionMenuId] = useState<number | null>(null)
@@ -328,59 +313,21 @@ function App() {
     if (action === 'revert') await refreshGitStatus()
   }
 
-  const displayedWorkspaces = workspaces.length ? workspaces : live ? [] : [demoWorkspace]
-  const displayedSessions = groupedSessions.length ? groupedSessions : live ? [] : [demoSession]
-  const gitLabel = !gitStatus ? 'Checking Git…' : !gitStatus.is_repository ? 'Not a Git repository' : `${gitStatus.branch}${gitStatus.dirty_count ? ` · ${gitStatus.dirty_count} changed` : ''}`
-
   return (
     <main className="app-shell" onClick={() => { setWorkspaceMenuId(null); setSessionMenuId(null) }}>
-      <header className="topbar">
-        <div className="brand-lockup"><div className="brand-mark">A</div><span>agent workbench</span></div>
-        <div className="environment-wrap">
-          <button className="environment-select" onClick={(event) => { event.stopPropagation(); setShowEnvironment((value) => !value) }}><span className="environment-dot" /> local environment <ChevronDown size={14} /></button>
-          {showEnvironment && <div className="environment-popover" onClick={(event) => event.stopPropagation()}><strong>Local runtime</strong><span><span className={`mini-status ${live ? 'online' : ''}`} /> {statusLabel(connection)}</span><span>{workspaces.length} workspace{workspaces.length === 1 ? '' : 's'} registered</span><button onClick={() => void checkBackend()} disabled={!live || checkingBackend}><RefreshCw size={13} className={checkingBackend ? 'spin' : ''} /> Check connection</button></div>}
-        </div>
-        <div className="topbar-actions"><button className="icon-button" aria-label="Settings" onClick={(event) => { event.stopPropagation(); setShowSettings(true) }}><Settings2 size={16} /></button><div className={`connection-pill ${connection}`}><span className="connection-dot" /> {statusLabel(connection)}</div></div>
-      </header>
+      <AppHeader connection={connection} onOpenSettings={() => setShowSettings(true)} />
 
       <div className={`workspace-grid ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${showActivity ? '' : 'activity-hidden'}`}>
-        {!sidebarCollapsed && <aside className="sidebar">
-          <div className="sidebar-heading"><span>Workspaces</span><button className="icon-button" aria-label="Add workspace" onClick={() => void chooseWorkspace()}><FolderPlus size={16} /></button></div>
-          <div className="workspace-list">
-            {displayedWorkspaces.map((workspace) => <div className="nav-row-wrap" key={workspace.id}>
-              <button className={`workspace-row ${workspace.id === activeWorkspace.id ? 'selected' : ''}`} onClick={() => selectWorkspace(workspace)}><Folder size={15} /><span>{workspace.name}</span></button>
-              <button className="row-menu-button" aria-label={`Actions for ${workspace.name}`} disabled={!live} onClick={(event) => { event.stopPropagation(); setWorkspaceMenuId((value) => value === workspace.id ? null : workspace.id) }}><MoreHorizontal size={15} /></button>
-              {workspaceMenuId === workspace.id && <div className="row-menu" onClick={(event) => event.stopPropagation()}><button onClick={() => void renameWorkspace(workspace)}><Pencil size={13} /> Rename</button><button className="danger" onClick={() => void removeWorkspace(workspace)}><Trash2 size={13} /> Remove</button></div>}
-            </div>)}
-            {live && workspaces.length === 0 && <button className="empty-list-action" onClick={() => void chooseWorkspace()}>Add your first workspace</button>}
-          </div>
-          <div className="sidebar-heading sessions-heading"><span>Sessions</span><button className="icon-button" aria-label="New session" disabled={!activeWorkspace.id} onClick={() => void createSession()}><Plus size={16} /></button></div>
-          <div className="session-list">
-            {displayedSessions.map((session) => <div className="nav-row-wrap" key={session.id}>
-              <button className={`session-row ${session.id === activeSession.id ? 'selected' : ''}`} onClick={() => selectSession(session)}><span className={`session-status ${sessionTone(session.status)}`} /><span className="session-copy"><strong>{session.title || 'New agent session'}</strong><small>{session.provider} · #{String(session.id).padStart(3, '0')}</small></span></button>
-              <button className="row-menu-button session-menu-button" aria-label={`Actions for session ${session.id}`} disabled={!live} onClick={(event) => { event.stopPropagation(); setSessionMenuId((value) => value === session.id ? null : session.id) }}><MoreHorizontal size={15} /></button>
-              {sessionMenuId === session.id && <div className="row-menu session-menu" onClick={(event) => event.stopPropagation()}><button className="danger" onClick={() => void deleteSession(session)}><Trash2 size={13} /> Delete session</button></div>}
-            </div>)}
-          </div>
-          <div className="sidebar-footer"><button className="footer-link" onClick={() => void refreshGitStatus()} disabled={!activeWorkspace.id}><GitBranch size={15} /><span>{gitLabel}</span><RefreshCw size={13} /></button><button className="footer-link" onClick={() => setSidebarCollapsed(true)}><PanelLeftClose size={15} /> Collapse</button></div>
-        </aside>}
+        {!sidebarCollapsed && <WorkspaceSidebar workspaces={workspaces} sessions={groupedSessions} activeWorkspaceId={activeWorkspace.id} activeSessionId={activeSession.id} live={live} workspaceMenuId={workspaceMenuId} sessionMenuId={sessionMenuId} onWorkspaceMenuChange={setWorkspaceMenuId} onSessionMenuChange={setSessionMenuId} onAddWorkspace={() => void chooseWorkspace()} onSelectWorkspace={selectWorkspace} onRenameWorkspace={(workspace) => void renameWorkspace(workspace)} onRemoveWorkspace={(workspace) => void removeWorkspace(workspace)} onCreateSession={() => void createSession()} onSelectSession={selectSession} onDeleteSession={(session) => void deleteSession(session)} onCollapse={() => setSidebarCollapsed(true)} />}
 
-        <section className="main-panel">
-          <div className="session-header"><div><div className="eyebrow"><span className="live-marker" /> {currentSession.id ? `Session #${String(currentSession.id).padStart(3, '0')}` : 'No active session'}</div><h1>{activeWorkspace.name}</h1><p className="path-line"><Folder size={13} /> {activeWorkspace.path}</p></div><div className="session-controls"><span className={`status-label ${currentSession.status}`}><span className="status-dot" /> {currentSession.status}</span>{currentSession.status === 'running' && <button className="stop-button" onClick={() => void stopSession()}><Square size={13} fill="currentColor" /> Stop</button>}</div></div>
-          {error && <div className="notice"><AlertCircle size={15} /><span>{error}</span><button onClick={() => setError(null)} aria-label="Dismiss"><X size={14} /></button></div>}
-          <div className="conversation-scroll" ref={conversationScrollRef}><div className="conversation-inner">
-            {messages.length === 0 ? <div className="empty-conversation"><div className="empty-icon"><MessageSquarePlus size={22} /></div><h2>{activeWorkspace.id ? 'Start a work session' : 'Add a workspace'}</h2><p>{activeWorkspace.id ? 'Ask Codex to inspect code, make a change, or explain what it finds.' : 'Choose a project folder to begin.'}</p>{!activeWorkspace.id && <button className="primary-action" onClick={() => void chooseWorkspace()}><FolderPlus size={14} /> Add workspace</button>}</div> : messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><div className="message-avatar">{message.role === 'user' ? 'YOU' : 'AI'}</div><div className="message-body"><div className="message-meta">{message.role === 'user' ? 'You' : 'Agent'} <span>{message.role === 'assistant' && '· live output'}</span></div><p>{message.content}</p></div></article>)}
-            {currentSession.status === 'running' && <div className="thinking"><LoaderCircle size={15} className="spin" /> Agent is working <span className="thinking-dots">...</span></div>}
-          </div></div>
-          <div className="composer-wrap"><div className="composer"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendPrompt() } }} placeholder="Ask Codex to work on your code..." rows={2} /><div className="composer-toolbar"><div className="composer-hints"><span><Terminal size={13} /> {activeWorkspace.name}</span><span>Enter to send · Shift+Enter for newline</span></div><div className="composer-actions"><button className="map-action" disabled={!live || !currentSession.id || currentSession.status === 'running' || currentSession.status === 'stopping'} onClick={() => void sendPrompt('Explain this codebase and map its main components and data flow.', 'map')}><Map size={14} /> Map codebase</button><button className="send-button" disabled={!prompt.trim() || !live || !currentSession.id || currentSession.status === 'running' || currentSession.status === 'stopping'} onClick={() => void sendPrompt()}>{live ? <Send size={15} /> : <WifiOff size={15} />} {live ? 'Send' : 'Offline'}</button></div></div></div><div className="composer-note">Codex runs with the workspace-write sandbox. Output is saved to session history.</div></div>
-        </section>
+        <ConversationPane workspace={activeWorkspace} session={currentSession} messages={messages} prompt={prompt} live={live} error={error} conversationScrollRef={conversationScrollRef} onPromptChange={setPrompt} onSend={() => void sendPrompt()} onMapCodebase={() => void sendPrompt('Explain this codebase and map its main components and data flow.', 'map')} onStop={() => void stopSession()} onDismissError={() => setError(null)} onAddWorkspace={() => void chooseWorkspace()} />
 
-        {showActivity && <aside className="activity-panel"><div className="activity-header"><div><span className="eyebrow">Session</span><h2>Work</h2></div><button className="icon-button" aria-label="Hide work panel" onClick={() => setShowActivity(false)}><PanelLeftClose size={16} /></button></div><WorkPanel summary={workSummary} status={currentSession.status} syncing={syncing} canSync={Boolean(currentSession.id)} onSync={() => void syncSession()} onOpenMap={() => setShowMap(true)} diff={runDiff?.run_id === latestRunId ? runDiff : null} earlierRunIds={earlierRunIds} onReviewDiff={(runId) => void openRunDiff(runId)} workspaceId={activeWorkspace.id} gitStatus={gitStatus} gitDisabled={!live || currentSession.status === 'running' || currentSession.status === 'stopping'} onGitChanged={setGitStatus} /></aside>}
+        {showActivity && <aside className="activity-panel"><div className="activity-header"><div><span className="eyebrow">Session</span><h2>Work</h2></div><button className="icon-button" aria-label="Hide work panel" onClick={() => setShowActivity(false)}><PanelLeftClose size={16} /></button></div><WorkPanel summary={workSummary} status={currentSession.status} onOpenMap={() => setShowMap(true)} diff={runDiff?.run_id === latestRunId ? runDiff : null} earlierRunIds={earlierRunIds} onReviewDiff={(runId) => void openRunDiff(runId)} workspaceId={activeWorkspace.id} gitStatus={gitStatus} gitDisabled={!live || currentSession.status === 'running' || currentSession.status === 'stopping'} onGitChanged={setGitStatus} /></aside>}
         {sidebarCollapsed && <button className="show-sidebar" onClick={() => setSidebarCollapsed(false)} aria-label="Show sidebar"><PanelLeftOpen size={16} /></button>}
         {!showActivity && <button className="show-activity" onClick={() => setShowActivity(true)} aria-label="Show activity"><Activity size={16} /></button>}
       </div>
 
-      {showSettings && <div className="modal-backdrop" onClick={() => setShowSettings(false)}><section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><span className="eyebrow">Application</span><h2 id="settings-title">Settings & status</h2></div><button className="icon-button" aria-label="Close settings" onClick={() => setShowSettings(false)}><X size={16} /></button></div><div className="settings-list"><div><span>Backend</span><strong className={live ? 'healthy' : 'unhealthy'}>{statusLabel(connection)}</strong></div><div><span>Agent provider</span><strong>Codex</strong></div><div><span>Database</span><strong>SQLite · local</strong></div><div><span>Sandbox</span><strong>Workspace write</strong></div><div><span>Workspace</span><strong title={activeWorkspace.path}>{activeWorkspace.id ? activeWorkspace.name : 'None'}</strong></div></div><label className="setting-toggle"><input type="checkbox" checked={!sidebarCollapsed} onChange={(event) => setSidebarCollapsed(!event.target.checked)} /> Show workspace sidebar</label><label className="setting-toggle"><input type="checkbox" checked={showActivity} onChange={(event) => setShowActivity(event.target.checked)} /> Show activity panel</label><div className="modal-actions"><button className="secondary-action" disabled={!live || checkingBackend} onClick={() => void checkBackend()}><RefreshCw size={14} className={checkingBackend ? 'spin' : ''} /> Check backend</button><button className="primary-action" onClick={() => setShowSettings(false)}>Done</button></div></section></div>}
+      {showSettings && <SettingsDialog connection={connection} workspace={activeWorkspace} showSidebar={!sidebarCollapsed} showActivity={showActivity} checkingBackend={checkingBackend} syncing={syncing} canSync={Boolean(currentSession.id) && live} onToggleSidebar={(show) => setSidebarCollapsed(!show)} onToggleActivity={setShowActivity} onCheckBackend={() => void checkBackend()} onSync={() => void syncSession()} onClose={() => setShowSettings(false)} />}
       {showMap && workSummary.map && <CodebaseMapView map={workSummary.map} onClose={() => setShowMap(false)} onOpenFile={(file) => void revealMapFile(file)} />}
       {reviewDiff && <RunDiffView diff={reviewDiff} onClose={() => setReviewDiff(null)} onDecision={(action) => decideRunDiff(reviewDiff.run_id, action)} />}
     </main>
