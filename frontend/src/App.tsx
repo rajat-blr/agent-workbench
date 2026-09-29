@@ -9,7 +9,7 @@ import { RunDiffView } from './RunDiffView'
 import { SettingsDialog } from './SettingsDialog'
 import { WorkPanel } from './WorkPanel'
 import { WorkspaceSidebar } from './WorkspaceSidebar'
-import { rpcClient } from './runtime'
+import { isDemoMode, rpcClient } from './runtime'
 import type { ActivityEvent, ConnectionStatus, GitStatus, Message, RunDiff, Session, SessionHistory, SessionStatus, Workspace } from './runtime'
 import { summarizeWork } from './workSummary'
 
@@ -49,10 +49,12 @@ function App() {
   const [syncing, setSyncing] = useState(false)
   const [checkingBackend, setCheckingBackend] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showDemoUnavailable, setShowDemoUnavailable] = useState(false)
   const activeSessionId = useRef(activeSession.id)
   const lastSequenceRef = useRef(0)
   const conversationScrollRef = useRef<HTMLDivElement>(null)
   const diffRefreshTimer = useRef<number | undefined>(undefined)
+  const unavailableInDemo = () => setShowDemoUnavailable(true)
 
   useEffect(() => { activeSessionId.current = activeSession.id }, [activeSession.id])
   useEffect(() => { localStorage.setItem('showActivity', String(showActivity)) }, [showActivity])
@@ -98,6 +100,10 @@ function App() {
     })
     const connect = async () => {
       try {
+        if (isDemoMode) {
+          await rpcClient.connect()
+          return
+        }
         const backendConnection = window.desktop
           ? await window.desktop.getBackendConnection()
           : { url: 'http://127.0.0.1:8000', token: import.meta.env.VITE_BACKEND_AUTH_TOKEN || '' }
@@ -189,6 +195,7 @@ function App() {
   }
 
   const chooseWorkspace = async () => {
+    if (isDemoMode) { unavailableInDemo(); return }
     const path = window.desktop ? await window.desktop.selectDirectory() : window.prompt('Workspace path')
     if (!path) return
     let workspace: Workspace
@@ -206,6 +213,7 @@ function App() {
   }
 
   const createSession = async () => {
+    if (isDemoMode) { unavailableInDemo(); return }
     if (!workspaces.some((workspace) => workspace.id === activeWorkspace.id)) { setError('Add a workspace before creating a session.'); return }
     try {
       const session = await rpcClient.request<Session>('session.create', { workspace_id: activeWorkspace.id, provider: 'codex' })
@@ -214,6 +222,7 @@ function App() {
   }
 
   const renameWorkspace = async (workspace: Workspace) => {
+    if (isDemoMode) { unavailableInDemo(); return }
     const name = window.prompt('Workspace name', workspace.name)?.trim()
     if (!name || name === workspace.name) return
     try {
@@ -225,6 +234,7 @@ function App() {
   }
 
   const removeWorkspace = async (workspace: Workspace) => {
+    if (isDemoMode) { unavailableInDemo(); return }
     if (!window.confirm(`Remove “${workspace.name}” and its saved sessions? Project files will not be deleted.`)) return
     try {
       await rpcClient.request('workspace.delete', { workspace_id: workspace.id })
@@ -239,6 +249,7 @@ function App() {
   }
 
   const deleteSession = async (session: Session) => {
+    if (isDemoMode) { unavailableInDemo(); return }
     if (!window.confirm(`Delete “${session.title || `Session #${session.id}`}” and its history?`)) return
     try {
       await rpcClient.request('session.delete', { session_id: session.id })
@@ -253,6 +264,7 @@ function App() {
   }
 
   const sendPrompt = async (contentOverride?: string, modeOverride?: 'chat' | 'map') => {
+    if (isDemoMode) { unavailableInDemo(); return }
     const content = (contentOverride ?? prompt).trim()
     if (!content || !live) return
     if (!sessions.some((session) => session.id === activeSession.id && session.workspace_id === activeWorkspace.id)) { setError('Create or select a session in this workspace before sending a prompt.'); return }
@@ -268,12 +280,14 @@ function App() {
   }
 
   const stopSession = async () => {
+    if (isDemoMode) { unavailableInDemo(); return }
     if (!sessions.some((session) => session.id === activeSession.id)) return
     try { await rpcClient.request('session.cancel', { session_id: activeSession.id }); setActiveSession((session) => ({ ...session, status: 'stopping' })) }
     catch { setError('Could not stop the agent.') }
   }
 
   const syncSession = async () => {
+    if (isDemoMode) { unavailableInDemo(); return }
     if (!live || !currentSession.id) return
     setSyncing(true)
     try {
@@ -286,6 +300,7 @@ function App() {
   }
 
   const checkBackend = async () => {
+    if (isDemoMode) { unavailableInDemo(); return }
     setCheckingBackend(true)
     try { await rpcClient.request('health.check'); setError(null) }
     catch { setError('The backend health check failed.') }
@@ -293,6 +308,7 @@ function App() {
   }
 
   const revealMapFile = async (file: string) => {
+    if (isDemoMode) { unavailableInDemo(); return }
     try {
       if (window.desktop) await window.desktop.revealWorkspaceFile(activeWorkspace.path, file)
       else await navigator.clipboard.writeText(`${activeWorkspace.path}/${file}`)
@@ -307,6 +323,7 @@ function App() {
   }
 
   const decideRunDiff = async (runId: number, action: 'accept' | 'revert') => {
+    if (isDemoMode) { unavailableInDemo(); return }
     const diff = await rpcClient.request<RunDiff>(`run.diff.${action}`, { session_id: activeSession.id, run_id: runId })
     setReviewDiff(diff)
     setRunDiff((current) => current?.run_id === runId ? diff : current)
@@ -315,21 +332,22 @@ function App() {
 
   return (
     <main className="app-shell" onClick={() => { setWorkspaceMenuId(null); setSessionMenuId(null) }}>
-      <AppHeader connection={connection} onOpenSettings={() => setShowSettings(true)} />
+      <AppHeader connection={connection} demo={isDemoMode} onOpenSettings={() => setShowSettings(true)} />
 
       <div className={`workspace-grid ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${showActivity ? '' : 'activity-hidden'}`}>
         {!sidebarCollapsed && <WorkspaceSidebar workspaces={workspaces} sessions={groupedSessions} activeWorkspaceId={activeWorkspace.id} activeSessionId={activeSession.id} live={live} workspaceMenuId={workspaceMenuId} sessionMenuId={sessionMenuId} onWorkspaceMenuChange={setWorkspaceMenuId} onSessionMenuChange={setSessionMenuId} onAddWorkspace={() => void chooseWorkspace()} onSelectWorkspace={selectWorkspace} onRenameWorkspace={(workspace) => void renameWorkspace(workspace)} onRemoveWorkspace={(workspace) => void removeWorkspace(workspace)} onCreateSession={() => void createSession()} onSelectSession={selectSession} onDeleteSession={(session) => void deleteSession(session)} onCollapse={() => setSidebarCollapsed(true)} />}
 
         <ConversationPane workspace={activeWorkspace} session={currentSession} messages={messages} prompt={prompt} live={live} error={error} conversationScrollRef={conversationScrollRef} onPromptChange={setPrompt} onSend={() => void sendPrompt()} onMapCodebase={() => void sendPrompt('Explain this codebase and map its main components and data flow.', 'map')} onStop={() => void stopSession()} onDismissError={() => setError(null)} onAddWorkspace={() => void chooseWorkspace()} />
 
-        {showActivity && <aside className="activity-panel"><div className="activity-header"><div><span className="eyebrow">Session</span><h2>Work</h2></div><button className="icon-button" aria-label="Hide work panel" onClick={() => setShowActivity(false)}><PanelLeftClose size={16} /></button></div><WorkPanel summary={workSummary} status={currentSession.status} onOpenMap={() => setShowMap(true)} diff={runDiff?.run_id === latestRunId ? runDiff : null} earlierRunIds={earlierRunIds} onReviewDiff={(runId) => void openRunDiff(runId)} workspaceId={activeWorkspace.id} gitStatus={gitStatus} gitDisabled={!live || currentSession.status === 'running' || currentSession.status === 'stopping'} onGitChanged={setGitStatus} /></aside>}
+        {showActivity && <aside className="activity-panel"><div className="activity-header"><div><span className="eyebrow">Session</span><h2>Work</h2></div><button className="icon-button" aria-label="Hide work panel" onClick={() => setShowActivity(false)}><PanelLeftClose size={16} /></button></div><WorkPanel summary={workSummary} status={currentSession.status} onOpenMap={() => setShowMap(true)} diff={runDiff?.run_id === latestRunId ? runDiff : null} earlierRunIds={earlierRunIds} onReviewDiff={(runId) => void openRunDiff(runId)} workspaceId={activeWorkspace.id} gitStatus={gitStatus} gitDisabled={!live || currentSession.status === 'running' || currentSession.status === 'stopping'} onGitChanged={setGitStatus} demo={isDemoMode} onDemoUnavailable={unavailableInDemo} /></aside>}
         {sidebarCollapsed && <button className="show-sidebar" onClick={() => setSidebarCollapsed(false)} aria-label="Show sidebar"><PanelLeftOpen size={16} /></button>}
         {!showActivity && <button className="show-activity" onClick={() => setShowActivity(true)} aria-label="Show activity"><Activity size={16} /></button>}
       </div>
 
-      {showSettings && <SettingsDialog connection={connection} workspace={activeWorkspace} showSidebar={!sidebarCollapsed} showActivity={showActivity} checkingBackend={checkingBackend} syncing={syncing} canSync={Boolean(currentSession.id) && live} onToggleSidebar={(show) => setSidebarCollapsed(!show)} onToggleActivity={setShowActivity} onCheckBackend={() => void checkBackend()} onSync={() => void syncSession()} onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsDialog connection={connection} workspace={activeWorkspace} showSidebar={!sidebarCollapsed} showActivity={showActivity} checkingBackend={checkingBackend} syncing={syncing} canSync={Boolean(currentSession.id) && live} demo={isDemoMode} onToggleSidebar={(show) => setSidebarCollapsed(!show)} onToggleActivity={setShowActivity} onCheckBackend={() => void checkBackend()} onSync={() => void syncSession()} onClose={() => setShowSettings(false)} />}
       {showMap && workSummary.map && <CodebaseMapView map={workSummary.map} onClose={() => setShowMap(false)} onOpenFile={(file) => void revealMapFile(file)} />}
-      {reviewDiff && <RunDiffView diff={reviewDiff} onClose={() => setReviewDiff(null)} onDecision={(action) => decideRunDiff(reviewDiff.run_id, action)} />}
+      {reviewDiff && <RunDiffView diff={reviewDiff} demo={isDemoMode} onClose={() => setReviewDiff(null)} onDecision={(action) => decideRunDiff(reviewDiff.run_id, action)} />}
+      {showDemoUnavailable && <div className="modal-backdrop demo-unavailable-backdrop" onClick={() => setShowDemoUnavailable(false)}><section className="demo-unavailable-modal" role="alertdialog" aria-modal="true" aria-labelledby="demo-unavailable-title" onClick={(event) => event.stopPropagation()}><span className="eyebrow">Recorded demo</span><h2 id="demo-unavailable-title">not available in demo version</h2><p>This action needs the local desktop app and its backend.</p><button className="primary-action" autoFocus onClick={() => setShowDemoUnavailable(false)}>Okay</button></section></div>}
     </main>
   )
 }

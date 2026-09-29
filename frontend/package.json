@@ -8,6 +8,7 @@
     "dev": "concurrently -k \"vite\" \"npm:electron:dev\"",
     "electron:dev": "wait-on tcp:127.0.0.1:5173 && electron .",
     "build": "tsc -b && vite build",
+    "build:demo": "tsc -b && vite build --mode demo",
     "build:backend": "cd ../backend && uv run --group packaging pyinstaller --clean --noconfirm agent-workbench-backend.spec",
     "lint": "oxlint",
     "package": "npm run build && npm run build:backend && electron-forge package",

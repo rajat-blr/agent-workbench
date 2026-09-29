@@ -9,10 +9,12 @@ type Props = {
   status: GitStatus | null
   disabled: boolean
   onChanged: (status: GitStatus) => void
+  demo?: boolean
+  onDemoUnavailable?: () => void
 }
 type ActionResult = { action: string; output: string; status: GitStatus }
 
-export function GitActions({ workspaceId, status, disabled, onChanged }: Props) {
+export function GitActions({ workspaceId, status, disabled, onChanged, demo = false, onDemoUnavailable }: Props) {
   const [busy, setBusy] = useState<Action | null>(null)
   const [commitOpen, setCommitOpen] = useState(false)
   const [message, setMessage] = useState('')
@@ -21,6 +23,7 @@ export function GitActions({ workspaceId, status, disabled, onChanged }: Props) 
   const ready = Boolean(workspaceId && status?.is_repository && status.is_root && status.branch === 'main' && !disabled)
 
   const run = async (action: Action, commitMessage?: string) => {
+    if (demo) { onDemoUnavailable?.(); return }
     setBusy(action); setFeedback(null); setError(null)
     try {
       const result = await rpcClient.request<ActionResult>(`workspace.git_${action}`, {
@@ -45,9 +48,9 @@ export function GitActions({ workspaceId, status, disabled, onChanged }: Props) 
     {!status ? <p>Checking Git status…</p> : !status.is_repository ? <p>This workspace is not a Git repository.</p> : !status.is_root ? <p>Select the repository root as the workspace to stage, commit, or push.</p> : status.branch !== 'main' ? <p>Switch to main before using these Git actions. Current branch: {status.branch}.</p> : <>
       <p>{status.unstaged_count} to stage · {status.staged_count} staged · main</p>
       <div className="git-action-buttons">
-        <button disabled={!ready || !!busy || status.unstaged_count === 0} title="git add ." onClick={() => void run('stage')}>{busy === 'stage' ? 'Staging…' : 'Stage'}</button>
-        <button disabled={!ready || !!busy || status.staged_count === 0} title="git commit -m [message]" onClick={() => { setError(null); setCommitOpen(true) }}>Commit</button>
-        <button disabled={!ready || !!busy} title="git push -u origin main" onClick={() => void run('push_main')}>{busy === 'push_main' ? 'Pushing…' : 'Push to main'}</button>
+        <button disabled={!demo && (!ready || !!busy || status.unstaged_count === 0)} title="git add ." onClick={() => void run('stage')}>{busy === 'stage' ? 'Staging…' : 'Stage'}</button>
+        <button disabled={!demo && (!ready || !!busy || status.staged_count === 0)} title="git commit -m [message]" onClick={() => { if (demo) { onDemoUnavailable?.(); return }; setError(null); setCommitOpen(true) }}>Commit</button>
+        <button disabled={!demo && (!ready || !!busy)} title="git push -u origin main" onClick={() => void run('push_main')}>{busy === 'push_main' ? 'Pushing…' : 'Push to main'}</button>
       </div>
     </>}
     {feedback && <pre className="git-action-feedback" role="status">{feedback}</pre>}

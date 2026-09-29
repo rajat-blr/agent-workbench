@@ -31,6 +31,12 @@
 .icon-button { display: grid; place-items: center; width: 30px; height: 30px; color: var(--muted); background: transparent; border-radius: 6px; }
 .icon-button:hover { color: var(--text); background: var(--panel-raised); }
 .connection-pill { display: flex; align-items: center; gap: 8px; padding: 7px 11px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font-size: 11px; }
+.demo-pill { padding: 7px 10px; border: 1px solid #665336; border-radius: 5px; color: var(--amber); background: rgba(90, 64, 34, .18); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.demo-unavailable-backdrop { z-index: 100; }
+.demo-unavailable-modal { width: min(390px, 100%); padding: 24px; border: 1px solid #665336; border-radius: 9px; background: #191c1f; box-shadow: 0 24px 70px rgba(0,0,0,.55); }
+.demo-unavailable-modal h2 { margin: 10px 0 8px; color: var(--text); font-size: 19px; }
+.demo-unavailable-modal p { margin: 0 0 22px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.demo-unavailable-modal .primary-action { margin-left: auto; }
 .connection-pill.connecting .connection-dot, .connection-pill.reconnecting .connection-dot { background: var(--amber); }
 .connection-pill.disconnected .connection-dot { background: var(--red); }
 .workspace-grid { display: grid; grid-template-columns: 268px minmax(500px, 1fr) 268px; height: calc(100vh - 62px); min-height: 0; overflow: hidden; }

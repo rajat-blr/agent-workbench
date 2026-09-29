@@ -119,4 +119,6 @@ export class RpcClient {
   }
 }
 
-export const rpcClient = new RpcClient()
+export const isDemoMode = import.meta.env.VITE_APP_MODE === 'demo'
+export const rpcClient = isDemoMode ? new DemoRpcClient() : new RpcClient()
+import { DemoRpcClient } from './demoRuntime'
