@@ -8,7 +8,7 @@ from typing import Any
 
 @dataclass(frozen=True, slots=True)
 class AgentEvent:
-    session_id: int
+    session_id: int | None
     run_id: int | None
     type: str
     payload: dict[str, Any]
@@ -34,6 +34,8 @@ class EventBroker:
         self._queue_size = queue_size
 
     def publish(self, event: AgentEvent) -> None:
+        if event.session_id is None:
+            return
         for queue in tuple(self._queues.get(event.session_id, ())):
             if queue.full():
                 queue.get_nowait()

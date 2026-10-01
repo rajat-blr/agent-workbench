@@ -6,6 +6,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./agent_workbench.db"
+    artifact_directory: str | None = None
+    eval_worktree_directory: str | None = None
     codex_command: str = "codex"
     codex_model: str | None = None
     agent_sandbox: str = "workspace-write"
@@ -33,6 +35,24 @@ class Settings(BaseSettings):
             Path(raw_path).expanduser().resolve().parent.mkdir(
                 parents=True, exist_ok=True
             )
+
+    @property
+    def resolved_artifact_directory(self) -> Path:
+        if self.artifact_directory:
+            return Path(self.artifact_directory).expanduser().resolve()
+        raw_path = self.database_url.removeprefix("sqlite+aiosqlite:///")
+        if raw_path == ":memory:":
+            return Path("./artifacts").resolve()
+        return Path(raw_path).expanduser().resolve().parent / "artifacts"
+
+    @property
+    def resolved_eval_worktree_directory(self) -> Path:
+        if self.eval_worktree_directory:
+            return Path(self.eval_worktree_directory).expanduser().resolve()
+        raw_path = self.database_url.removeprefix("sqlite+aiosqlite:///")
+        if raw_path == ":memory:":
+            return Path("./eval-worktrees").resolve()
+        return Path(raw_path).expanduser().resolve().parent / "eval-worktrees"
 
 
 @lru_cache

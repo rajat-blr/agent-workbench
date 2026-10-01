@@ -13,3 +13,6 @@ backend/validation.db
 backend/agent_workbench.db
 backend/agent_workbench.db-shm
 backend/agent_workbench.db-wal
+backend/agent_workbench.db.*.bak
+backend/artifacts/
+backend/eval-worktrees/

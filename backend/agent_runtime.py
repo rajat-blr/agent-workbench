@@ -3,24 +3,57 @@ import json
 import logging
 import os
 import signal
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
+from artifacts import ArtifactStore, ArtifactWriter, StoredArtifact
 from codebase_map import MAP_INSTRUCTIONS, extract_codebase_map
 from event_broker import AgentEvent, EventBroker
 
 EventPersister = Callable[
-    [int, int, str, dict[str, Any], str | None], Awaitable[AgentEvent]
+    [int | None, int, str, dict[str, Any], str | None], Awaitable[AgentEvent]
 ]
 DiffFinalizer = Callable[[int], Awaitable[dict[str, Any] | None]]
+ArtifactPersister = Callable[[int, StoredArtifact], Awaitable[dict[str, Any]]]
 logger = logging.getLogger(__name__)
+SandboxMode = Literal["read-only", "workspace-write"]
+ReasoningEffort = Literal["minimal", "low", "medium", "high", "xhigh"]
+MAX_PARSED_JSONL_LINE_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class ExecutionOptions:
+    """Per-run inputs that may differ between chat and eval executions."""
+
+    model: str | None = None
+    reasoning_effort: ReasoningEffort | None = None
+    sandbox: SandboxMode | None = None
+    config_overrides: tuple[str, ...] = ()
+    environment: Mapping[str, str] = field(default_factory=dict)
+    timeout_seconds: float | None = None
+    ephemeral: bool = False
+    ignore_user_config: bool = False
+
+    def __post_init__(self) -> None:
+        if self.timeout_seconds is not None and self.timeout_seconds <= 0:
+            raise ValueError("Execution timeout must be greater than zero")
+        if any("=" not in override for override in self.config_overrides):
+            raise ValueError("Codex config overrides must use key=value syntax")
+        if any(not key or "=" in key or "\0" in key for key in self.environment):
+            raise ValueError("Execution environment contains an invalid variable name")
+        if any("\0" in value for value in self.environment.values()):
+            raise ValueError("Execution environment values cannot contain null bytes")
 
 
 class AgentAdapter(Protocol):
     async def start(
-        self, workspace_path: str, prompt: str, thread_id: str | None = None
+        self,
+        workspace_path: str,
+        prompt: str,
+        thread_id: str | None = None,
+        options: ExecutionOptions | None = None,
     ) -> asyncio.subprocess.Process: ...
 
 
@@ -29,7 +62,7 @@ class CodexAgentAdapter:
         self,
         command: str = "codex",
         model: str | None = None,
-        sandbox: str = "workspace-write",
+        sandbox: SandboxMode = "workspace-write",
         skip_git_repo_check: bool = False,
     ) -> None:
         if sandbox not in {"read-only", "workspace-write"}:
@@ -40,8 +73,16 @@ class CodexAgentAdapter:
         self.skip_git_repo_check = skip_git_repo_check
 
     def build_command(
-        self, workspace_path: str, prompt: str, thread_id: str | None
+        self,
+        workspace_path: str,
+        prompt: str,
+        thread_id: str | None,
+        options: ExecutionOptions | None = None,
     ) -> list[str]:
+        options = options or ExecutionOptions()
+        sandbox = options.sandbox or self.sandbox
+        if sandbox not in {"read-only", "workspace-write"}:
+            raise ValueError("Codex sandbox must be read-only or workspace-write")
         command = [
             self.command,
             "exec",
@@ -49,10 +90,24 @@ class CodexAgentAdapter:
             "--color",
             "never",
             "--sandbox",
-            self.sandbox,
+            sandbox,
         ]
-        if self.model:
-            command.extend(["--model", self.model])
+        model = options.model if options.model is not None else self.model
+        if model:
+            command.extend(["--model", model])
+        if options.reasoning_effort:
+            command.extend(
+                [
+                    "--config",
+                    f'model_reasoning_effort="{options.reasoning_effort}"',
+                ]
+            )
+        for override in options.config_overrides:
+            command.extend(["--config", override])
+        if options.ephemeral:
+            command.append("--ephemeral")
+        if options.ignore_user_config:
+            command.append("--ignore-user-config")
         workspace = Path(workspace_path).resolve()
         is_git_workspace = any(
             (candidate / ".git").exists()
@@ -66,9 +121,9 @@ class CodexAgentAdapter:
             command.extend(["--cd", workspace_path, "-"])
         return command
 
-    async def start(
-        self, workspace_path: str, prompt: str, thread_id: str | None = None
-    ) -> asyncio.subprocess.Process:
+    @staticmethod
+    def build_environment(options: ExecutionOptions | None = None) -> dict[str, str]:
+        options = options or ExecutionOptions()
         safe_environment = {
             key: value
             for key, value in os.environ.items()
@@ -88,12 +143,24 @@ class CodexAgentAdapter:
                 "USER",
             }
         }
+        safe_environment.update(options.environment)
+        return safe_environment
+
+    async def start(
+        self,
+        workspace_path: str,
+        prompt: str,
+        thread_id: str | None = None,
+        options: ExecutionOptions | None = None,
+    ) -> asyncio.subprocess.Process:
+        options = options or ExecutionOptions()
+        safe_environment = self.build_environment(options)
         process_options: dict[str, Any] = {}
         if os.name != "nt":
             process_options["start_new_session"] = True
         try:
             process = await asyncio.create_subprocess_exec(
-                *self.build_command(workspace_path, prompt, thread_id),
+                *self.build_command(workspace_path, prompt, thread_id, options),
                 cwd=workspace_path,
                 env=safe_environment,
                 stdin=asyncio.subprocess.PIPE,
@@ -127,9 +194,12 @@ class CodexAgentAdapter:
 @dataclass
 class RunningAgent:
     run_id: int
+    session_id: int | None
     process: asyncio.subprocess.Process
     output_task: asyncio.Task[None]
     error_task: asyncio.Task[None]
+    timeout_seconds: float
+    raw_output_writer: ArtifactWriter | None = None
     watch_task: asyncio.Task[None] | None = None
     cancel_ready: asyncio.Event | None = None
 
@@ -142,19 +212,23 @@ class AgentRuntimeManager:
         persist_event: EventPersister,
         timeout_seconds: int = 3600,
         diff_finalizer: DiffFinalizer | None = None,
+        artifact_store: ArtifactStore | None = None,
+        artifact_persister: ArtifactPersister | None = None,
     ) -> None:
         self.broker = broker
         self.adapter = adapter
         self.persist_event = persist_event
         self.timeout_seconds = timeout_seconds
         self.diff_finalizer = diff_finalizer
+        self.artifact_store = artifact_store
+        self.artifact_persister = artifact_persister
         self._agents: dict[int, RunningAgent] = {}
         self._cancelled: set[int] = set()
         self._lock = asyncio.Lock()
 
     async def _emit(
         self,
-        session_id: int,
+        session_id: int | None,
         run_id: int,
         event_type: str,
         payload: dict[str, Any],
@@ -182,32 +256,63 @@ class AgentRuntimeManager:
 
     async def start(
         self,
-        session_id: int,
+        session_id: int | None,
         run_id: int,
         workspace_path: str,
         prompt: str,
         thread_id: str | None = None,
         *,
         mode: str = "chat",
+        execution: ExecutionOptions | None = None,
     ) -> None:
         async with self._lock:
-            existing = self._agents.get(session_id)
+            existing = self._agents.get(run_id)
             if existing and existing.process.returncode is None:
-                raise RuntimeError("A run is already active for this session")
+                raise RuntimeError("This run is already active")
             if not Path(workspace_path).is_dir():
                 raise ValueError("Workspace path must be an existing directory")
             agent_prompt = prompt + MAP_INSTRUCTIONS if mode == "map" else prompt
-            process = await self.adapter.start(workspace_path, agent_prompt, thread_id)
+            raw_output_writer = (
+                self.artifact_store.open_writer(
+                    run_id,
+                    "raw_jsonl",
+                    {"content_type": "application/x-ndjson"},
+                )
+                if self.artifact_store
+                else None
+            )
+            try:
+                execution = execution or ExecutionOptions()
+                process = await self.adapter.start(
+                    workspace_path, agent_prompt, thread_id, execution
+                )
+            except Exception:
+                if raw_output_writer:
+                    raw_output_writer.abort()
+                raise
             output_task = asyncio.create_task(
                 self._read_stdout(
-                    session_id, run_id, process.stdout, workspace_path, mode
+                    session_id,
+                    run_id,
+                    process.stdout,
+                    workspace_path,
+                    mode,
+                    raw_output_writer,
                 )
             )
             error_task = asyncio.create_task(
                 self._read_stderr(session_id, run_id, process.stderr)
             )
-            agent = RunningAgent(run_id, process, output_task, error_task)
-            self._agents[session_id] = agent
+            agent = RunningAgent(
+                run_id,
+                session_id,
+                process,
+                output_task,
+                error_task,
+                execution.timeout_seconds or self.timeout_seconds,
+                raw_output_writer,
+            )
+            self._agents[run_id] = agent
             try:
                 await self._emit(
                     session_id,
@@ -221,26 +326,41 @@ class AgentRuntimeManager:
                 )
             except Exception:
                 self._terminate_process(process)
-                self._agents.pop(session_id, None)
+                output_task.cancel()
+                error_task.cancel()
+                if raw_output_writer:
+                    raw_output_writer.abort()
+                self._agents.pop(run_id, None)
                 raise
             agent.watch_task = asyncio.create_task(
                 self._watch_process(session_id, agent)
             )
 
-    async def cancel(self, session_id: int) -> bool:
-        agent = self._agents.get(session_id)
+    async def cancel(self, run_id: int) -> bool:
+        agent = self._agents.get(run_id)
         if not agent or agent.process.returncode is not None:
             return False
         agent.cancel_ready = asyncio.Event()
-        self._cancelled.add(session_id)
+        self._cancelled.add(run_id)
         try:
             await self._emit(
-                session_id, agent.run_id, "session.stopping", {"reason": "cancelled"}
+                agent.session_id,
+                agent.run_id,
+                "session.stopping",
+                {"reason": "cancelled"},
             )
         finally:
             self._terminate_process(agent.process)
             agent.cancel_ready.set()
         return True
+
+    async def wait(self, run_id: int) -> None:
+        """Wait for a started run to finish without exposing process internals."""
+        async with self._lock:
+            agent = self._agents.get(run_id)
+            watch_task = agent.watch_task if agent else None
+        if watch_task:
+            await asyncio.shield(watch_task)
 
     def _terminate_process(
         self, process: asyncio.subprocess.Process, *, force: bool = False
@@ -260,17 +380,26 @@ class AgentRuntimeManager:
 
     async def _read_stdout(
         self,
-        session_id: int,
+        session_id: int | None,
         run_id: int,
         stream: asyncio.StreamReader | None,
         workspace_path: str,
         mode: str,
+        raw_output_writer: ArtifactWriter | None,
     ) -> None:
         if not stream:
             return
         map_emitted = False
-        while line := await stream.readline():
-            text = line.decode(errors="replace").rstrip("\r\n")
+        async for line, line_truncated in self._stdout_lines(stream, raw_output_writer):
+            text = line.decode(errors="replace").rstrip("\r")
+            if line_truncated:
+                await self._emit(
+                    session_id,
+                    run_id,
+                    "codex.output",
+                    {"content": text + "\n… [line too large; full output in artifact]"},
+                )
+                continue
             try:
                 message = json.loads(text)
             except json.JSONDecodeError:
@@ -327,8 +456,32 @@ class AgentRuntimeManager:
                 {"reason": "Codex did not return a valid codebase map"},
             )
 
+    @staticmethod
+    async def _stdout_lines(
+        stream: asyncio.StreamReader,
+        raw_output_writer: ArtifactWriter | None,
+    ) -> AsyncIterator[tuple[bytes, bool]]:
+        buffer = bytearray()
+        truncated = False
+        while chunk := await stream.read(64 * 1024):
+            if raw_output_writer:
+                raw_output_writer.write(chunk)
+            parts = chunk.split(b"\n")
+            for index, part in enumerate(parts):
+                remaining = MAX_PARSED_JSONL_LINE_BYTES - len(buffer)
+                if remaining > 0:
+                    buffer.extend(part[:remaining])
+                if len(part) > remaining:
+                    truncated = True
+                if index < len(parts) - 1:
+                    yield bytes(buffer), truncated
+                    buffer.clear()
+                    truncated = False
+        if buffer or truncated:
+            yield bytes(buffer), truncated
+
     async def _read_stderr(
-        self, session_id: int, run_id: int, stream: asyncio.StreamReader | None
+        self, session_id: int | None, run_id: int, stream: asyncio.StreamReader | None
     ) -> None:
         if not stream:
             return
@@ -339,12 +492,12 @@ class AgentRuntimeManager:
                     session_id, run_id, "agent.error", {"content": content}
                 )
 
-    async def _watch_process(self, session_id: int, agent: RunningAgent) -> None:
+    async def _watch_process(self, session_id: int | None, agent: RunningAgent) -> None:
         timed_out = False
         try:
             try:
                 return_code = await asyncio.wait_for(
-                    agent.process.wait(), timeout=self.timeout_seconds
+                    agent.process.wait(), timeout=agent.timeout_seconds
                 )
             except TimeoutError:
                 timed_out = True
@@ -365,6 +518,29 @@ class AgentRuntimeManager:
             await asyncio.gather(
                 agent.output_task, agent.error_task, return_exceptions=True
             )
+            if agent.raw_output_writer:
+                try:
+                    artifact = agent.raw_output_writer.finish()
+                    artifact_record = (
+                        await self.artifact_persister(agent.run_id, artifact)
+                        if self.artifact_persister
+                        else {
+                            "artifact_type": artifact.artifact_type,
+                            "relative_path": artifact.relative_path,
+                            "sha256": artifact.sha256,
+                            "byte_size": artifact.byte_size,
+                        }
+                    )
+                    await self._emit(
+                        session_id,
+                        agent.run_id,
+                        "artifact.raw_jsonl",
+                        artifact_record,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Could not finalize raw output for run %s", agent.run_id
+                    )
             if self.diff_finalizer:
                 try:
                     diff = await self.diff_finalizer(agent.run_id)
@@ -389,7 +565,7 @@ class AgentRuntimeManager:
                 except Exception:
                     # Diff capture must never turn a completed Codex run into a failure.
                     logger.exception("Could not finalize diff for run %s", agent.run_id)
-            cancelled = session_id in self._cancelled
+            cancelled = agent.run_id in self._cancelled
             if cancelled and agent.cancel_ready:
                 await agent.cancel_ready.wait()
             if cancelled:
@@ -401,21 +577,19 @@ class AgentRuntimeManager:
             payload: dict[str, Any] = {"return_code": return_code}
             if timed_out:
                 payload["error"] = (
-                    f"Codex exceeded the {self.timeout_seconds}s run timeout"
+                    f"Codex exceeded the {agent.timeout_seconds:g}s run timeout"
                 )
             await self._emit(session_id, agent.run_id, event_type, payload)
         finally:
-            self._cancelled.discard(session_id)
-            if self._agents.get(session_id) is agent:
-                self._agents.pop(session_id, None)
+            self._cancelled.discard(agent.run_id)
+            if self._agents.get(agent.run_id) is agent:
+                self._agents.pop(agent.run_id, None)
 
     async def shutdown(self) -> None:
         agents = tuple(self._agents.items())
-        await asyncio.gather(
-            *(self.cancel(session_id) for session_id, _agent in agents)
-        )
+        await asyncio.gather(*(self.cancel(run_id) for run_id, _agent in agents))
         watch_tasks = [
-            agent.watch_task for _session_id, agent in agents if agent.watch_task
+            agent.watch_task for _run_id, agent in agents if agent.watch_task
         ]
         if watch_tasks:
             await asyncio.gather(*watch_tasks, return_exceptions=True)

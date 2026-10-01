@@ -12,8 +12,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from database import models
 from sqlalchemy.ext.asyncio import async_sessionmaker
+
+from database import models
 
 MAX_TRACKED_FILES = 50_000
 MAX_DIRTY_FILES = 200
@@ -128,10 +129,82 @@ def _capture_baseline(workspace_path: str) -> dict[str, Any]:
             overrides[filename]["mode"] = stat.S_IMODE((repo / filename).stat().st_mode)
     return {
         "repo": str(repo),
+        "base_sha": _git(repo, "rev-parse", "HEAD").decode().strip(),
         "pathspec": pathspec,
         "tracked": tracked,
         "overrides": overrides,
     }
+
+
+def build_starting_patch(baseline: dict[str, Any], base_sha: str) -> bytes:
+    """Reconstruct the saved pre-run checkout and return a HEAD-applicable patch."""
+    repo = Path(baseline["repo"]).resolve()
+    with tempfile.TemporaryDirectory(prefix="agent-workbench-case-") as temporary:
+        checkout = (Path(temporary) / "checkout").resolve()
+        subprocess.run(
+            [
+                "git",
+                "clone",
+                "--quiet",
+                "--no-checkout",
+                "--shared",
+                str(repo),
+                str(checkout),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
+        _git(checkout, "checkout", "--quiet", "--detach", base_sha)
+        base_entries = {}
+        for row in _git(
+            checkout,
+            "ls-tree",
+            "-r",
+            "-z",
+            base_sha,
+            "--",
+            baseline["pathspec"],
+        ).split(b"\0"):
+            if row:
+                metadata, filename = row.split(b"\t", 1)
+                mode, _kind, oid = metadata.decode().split(" ")
+                base_entries[filename.decode()] = {"mode": mode, "oid": oid}
+        tracked = baseline.get("tracked", {})
+        overrides = baseline.get("overrides", {})
+        for filename in sorted(set(base_entries) | set(tracked) | set(overrides)):
+            candidate = (checkout / filename).resolve()
+            if not candidate.is_relative_to(checkout):
+                raise RuntimeError("Saved baseline contains an unsafe path")
+            override = overrides.get(filename)
+            if override:
+                kind = override.get("kind")
+                if kind == "binary":
+                    raise RuntimeError(
+                        "Binary pre-run changes cannot be converted into an eval case"
+                    )
+                if kind == "missing":
+                    candidate.unlink(missing_ok=True)
+                    continue
+                if kind == "text":
+                    candidate.parent.mkdir(parents=True, exist_ok=True)
+                    candidate.write_bytes(base64.b64decode(override["content"]))
+                    os.chmod(candidate, int(override.get("mode", 0o644)))
+                    continue
+                raise RuntimeError("Saved baseline contains an unsupported file state")
+            entry = tracked.get(filename)
+            if entry:
+                if entry != base_entries.get(filename):
+                    candidate.parent.mkdir(parents=True, exist_ok=True)
+                    candidate.write_bytes(_git(repo, "cat-file", "blob", entry["oid"]))
+                    os.chmod(
+                        candidate,
+                        0o755 if entry.get("mode") == "100755" else 0o644,
+                    )
+            else:
+                candidate.unlink(missing_ok=True)
+        _git(checkout, "add", "-N", "--all")
+        return _git(checkout, "diff", "--binary", "--full-index", "HEAD", "--")
 
 
 def _baseline_file(baseline: dict[str, Any], filename: str) -> tuple[str, bytes | None]:

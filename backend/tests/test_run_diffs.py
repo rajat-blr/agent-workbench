@@ -1,11 +1,12 @@
 import subprocess
 
-import main
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+import main
 from database import Base, models
 from database.schemas import RpcRequest
 from run_diffs import RunDiffService, _build_diff, _capture_baseline
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 
 def git(root, *arguments):

@@ -5,6 +5,7 @@ import './refinement.css'
 import { AppHeader } from './AppHeader'
 import { CodebaseMapView } from './CodebaseMapView'
 import { ConversationPane } from './ConversationPane'
+import { EvalsMode } from './EvalsMode'
 import { RunDiffView } from './RunDiffView'
 import { SettingsDialog } from './SettingsDialog'
 import { WorkPanel } from './WorkPanel'
@@ -29,6 +30,8 @@ async function fetchFullHistory(sessionId: number, afterSequence = 0): Promise<S
 }
 
 function App() {
+  const [productMode, setProductMode] = useState<'chat' | 'evals'>(() => localStorage.getItem('productMode') === 'evals' ? 'evals' : 'chat')
+  const [creatingEval, setCreatingEval] = useState(false)
   const [connection, setConnection] = useState<ConnectionStatus>('connecting')
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [sessions, setSessions] = useState<Session[]>([])
@@ -59,6 +62,7 @@ function App() {
   useEffect(() => { activeSessionId.current = activeSession.id }, [activeSession.id])
   useEffect(() => { localStorage.setItem('showActivity', String(showActivity)) }, [showActivity])
   useEffect(() => { localStorage.setItem('sidebarCollapsed', String(sidebarCollapsed)) }, [sidebarCollapsed])
+  useEffect(() => { localStorage.setItem('productMode', productMode) }, [productMode])
 
   useEffect(() => {
     const scrollArea = conversationScrollRef.current
@@ -330,19 +334,30 @@ function App() {
     if (action === 'revert') await refreshGitStatus()
   }
 
+  const createEvalCaseFromRun = async (runId: number) => {
+    if (isDemoMode) { unavailableInDemo(); return }
+    setCreatingEval(true)
+    try {
+      await rpcClient.request('eval.case.create_from_run', { run_id: runId })
+      setProductMode('evals')
+      setError(null)
+    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not create an eval case from this run.') }
+    finally { setCreatingEval(false) }
+  }
+
   return (
     <main className="app-shell" onClick={() => { setWorkspaceMenuId(null); setSessionMenuId(null) }}>
-      <AppHeader connection={connection} demo={isDemoMode} onOpenSettings={() => setShowSettings(true)} />
+      <AppHeader connection={connection} demo={isDemoMode} mode={productMode} onModeChange={setProductMode} onOpenSettings={() => setShowSettings(true)} />
 
-      <div className={`workspace-grid ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${showActivity ? '' : 'activity-hidden'}`}>
+      {productMode === 'evals' ? <EvalsMode live={live} demo={isDemoMode} workspaces={workspaces} /> : <div className={`workspace-grid ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${showActivity ? '' : 'activity-hidden'}`}>
         {!sidebarCollapsed && <WorkspaceSidebar workspaces={workspaces} sessions={groupedSessions} activeWorkspaceId={activeWorkspace.id} activeSessionId={activeSession.id} live={live} workspaceMenuId={workspaceMenuId} sessionMenuId={sessionMenuId} onWorkspaceMenuChange={setWorkspaceMenuId} onSessionMenuChange={setSessionMenuId} onAddWorkspace={() => void chooseWorkspace()} onSelectWorkspace={selectWorkspace} onRenameWorkspace={(workspace) => void renameWorkspace(workspace)} onRemoveWorkspace={(workspace) => void removeWorkspace(workspace)} onCreateSession={() => void createSession()} onSelectSession={selectSession} onDeleteSession={(session) => void deleteSession(session)} onCollapse={() => setSidebarCollapsed(true)} />}
 
         <ConversationPane workspace={activeWorkspace} session={currentSession} messages={messages} prompt={prompt} live={live} error={error} conversationScrollRef={conversationScrollRef} onPromptChange={setPrompt} onSend={() => void sendPrompt()} onMapCodebase={() => void sendPrompt('Explain this codebase and map its main components and data flow.', 'map')} onStop={() => void stopSession()} onDismissError={() => setError(null)} onAddWorkspace={() => void chooseWorkspace()} />
 
-        {showActivity && <aside className="activity-panel"><div className="activity-header"><div><span className="eyebrow">Session</span><h2>Work</h2></div><button className="icon-button" aria-label="Hide work panel" onClick={() => setShowActivity(false)}><PanelLeftClose size={16} /></button></div><WorkPanel summary={workSummary} status={currentSession.status} onOpenMap={() => setShowMap(true)} diff={runDiff?.run_id === latestRunId ? runDiff : null} earlierRunIds={earlierRunIds} onReviewDiff={(runId) => void openRunDiff(runId)} workspaceId={activeWorkspace.id} gitStatus={gitStatus} gitDisabled={!live || currentSession.status === 'running' || currentSession.status === 'stopping'} onGitChanged={setGitStatus} demo={isDemoMode} onDemoUnavailable={unavailableInDemo} /></aside>}
+        {showActivity && <aside className="activity-panel"><div className="activity-header"><div><span className="eyebrow">Session</span><h2>Work</h2></div><button className="icon-button" aria-label="Hide work panel" onClick={() => setShowActivity(false)}><PanelLeftClose size={16} /></button></div><WorkPanel summary={workSummary} status={currentSession.status} onOpenMap={() => setShowMap(true)} diff={runDiff?.run_id === latestRunId ? runDiff : null} earlierRunIds={earlierRunIds} onReviewDiff={(runId) => void openRunDiff(runId)} workspaceId={activeWorkspace.id} gitStatus={gitStatus} gitDisabled={!live || currentSession.status === 'running' || currentSession.status === 'stopping'} onGitChanged={setGitStatus} demo={isDemoMode} onDemoUnavailable={unavailableInDemo} latestRunId={latestRunId ?? null} creatingEval={creatingEval} onCreateEvalCase={(runId) => void createEvalCaseFromRun(runId)} /></aside>}
         {sidebarCollapsed && <button className="show-sidebar" onClick={() => setSidebarCollapsed(false)} aria-label="Show sidebar"><PanelLeftOpen size={16} /></button>}
         {!showActivity && <button className="show-activity" onClick={() => setShowActivity(true)} aria-label="Show activity"><Activity size={16} /></button>}
-      </div>
+      </div>}
 
       {showSettings && <SettingsDialog connection={connection} workspace={activeWorkspace} showSidebar={!sidebarCollapsed} showActivity={showActivity} checkingBackend={checkingBackend} syncing={syncing} canSync={Boolean(currentSession.id) && live} demo={isDemoMode} onToggleSidebar={(show) => setSidebarCollapsed(!show)} onToggleActivity={setShowActivity} onCheckBackend={() => void checkBackend()} onSync={() => void syncSession()} onClose={() => setShowSettings(false)} />}
       {showMap && workSummary.map && <CodebaseMapView map={workSummary.map} onClose={() => setShowMap(false)} onOpenFile={(file) => void revealMapFile(file)} />}

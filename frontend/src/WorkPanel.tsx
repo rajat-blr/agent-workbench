@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle2, FileCode2, LoaderCircle, Map, Terminal, XCircle } from 'lucide-react'
+import { AlertCircle, Beaker, CheckCircle2, FileCode2, LoaderCircle, Map, Terminal, XCircle } from 'lucide-react'
 import type { RunDiff, SessionStatus } from './runtime'
 import type { GitStatus } from './runtime'
 import type { WorkSummary } from './workSummary'
@@ -17,9 +17,12 @@ type Props = {
   onGitChanged: (status: GitStatus) => void
   demo?: boolean
   onDemoUnavailable?: () => void
+  latestRunId: number | null
+  creatingEval: boolean
+  onCreateEvalCase: (runId: number) => void
 }
 
-export function WorkPanel({ summary, status, onOpenMap, diff, earlierRunIds, onReviewDiff, workspaceId, gitStatus, gitDisabled, onGitChanged, demo = false, onDemoUnavailable }: Props) {
+export function WorkPanel({ summary, status, onOpenMap, diff, earlierRunIds, onReviewDiff, workspaceId, gitStatus, gitDisabled, onGitChanged, demo = false, onDemoUnavailable, latestRunId, creatingEval, onCreateEvalCase }: Props) {
   return <>
     <div className="work-status-card">
       <span className={`work-status-icon ${status === 'failed' ? 'failed' : ''}`}>{status === 'running' ? <LoaderCircle size={16} className="spin" /> : status === 'failed' ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />}</span>
@@ -28,6 +31,7 @@ export function WorkPanel({ summary, status, onOpenMap, diff, earlierRunIds, onR
     <div className="work-content">
       {summary.map && <button className="work-map-card" onClick={onOpenMap}><Map size={18} /><span><strong>Codebase map</strong><small>{summary.map.nodes.length} components · {summary.map.edges.length} relationships</small></span><span aria-hidden="true">↗</span></button>}
       {summary.mode === 'map' && !summary.map && <div className="work-map-pending"><Map size={16} /><span>{summary.mapUnavailable ? 'No valid map was returned. The explanation is still available in chat.' : 'A codebase map will appear here when it is ready.'}</span></div>}
+      {status === 'completed' && latestRunId != null && <button className="create-eval-card" disabled={creatingEval} onClick={() => onCreateEvalCase(latestRunId)}><Beaker size={17} /><span><strong>{creatingEval ? 'Creating draft…' : 'Create eval case'}</strong><small>Reuse this prompt, commit, starting state, and checks.</small></span><span aria-hidden="true">→</span></button>}
       {(diff?.file_count || summary.changedFiles.length > 0 || earlierRunIds.length > 0) ? <section className="work-section"><h3><FileCode2 size={13} /> Changes during this run</h3>{diff?.status === 'ready' ? <><p>{diff.file_count ? `${diff.file_count} file${diff.file_count === 1 ? '' : 's'} · +${diff.added} −${diff.deleted}` : 'No changes since this run started.'}</p>{diff.file_count > 0 && <button className="review-diff-button" onClick={() => onReviewDiff(diff.run_id)}>View changes for this run <span>↗</span></button>}{!diff.final && <small className="diff-refresh-note">Updates after completed file changes and commands.</small>}</> : diff?.status === 'unavailable' ? <p>{diff.reason || 'Git diff is unavailable for this run.'}</p> : summary.changedFiles.length ? <ul>{summary.changedFiles.map((file) => <li key={file} title={file}>{file}</li>)}</ul> : <p>No file changes recorded for this run.</p>}{earlierRunIds.length > 0 && <details className="earlier-run-diffs"><summary>Earlier runs</summary>{earlierRunIds.map((runId) => <button key={runId} onClick={() => onReviewDiff(runId)}>Run #{runId} · View changes <span>↗</span></button>)}</details>}</section> : null}
       <GitActions key={workspaceId} workspaceId={workspaceId} status={gitStatus} disabled={gitDisabled} onChanged={onGitChanged} demo={demo} onDemoUnavailable={onDemoUnavailable} />
       {summary.checks.length > 0 && <section className="work-section"><h3><CheckCircle2 size={13} /> Checks</h3><ul>{summary.checks.map((check, index) => <li className={check.passed ? 'check-pass' : 'check-fail'} key={`${check.command}-${index}`}>{check.passed ? <CheckCircle2 size={12} /> : <XCircle size={12} />}<span title={check.command}>{check.label} · {check.passed ? 'passed' : 'failed'}</span></li>)}</ul></section>}

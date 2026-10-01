@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { AlertTriangle, FileCode2, X } from 'lucide-react'
 import type { RunDiff } from './runtime'
 
-type Props = { diff: RunDiff; demo?: boolean; onClose: () => void; onDecision: (action: 'accept' | 'revert') => Promise<void> }
+type Props = { diff: RunDiff; demo?: boolean; readOnly?: boolean; onClose: () => void; onDecision: (action: 'accept' | 'revert') => Promise<void> }
 
 function lineKind(line: string) {
   if (line.startsWith('@@')) return 'hunk'
@@ -27,7 +27,7 @@ function parseLines(patch: string) {
   })
 }
 
-export function RunDiffView({ diff, demo = false, onClose, onDecision }: Props) {
+export function RunDiffView({ diff, demo = false, readOnly = false, onClose, onDecision }: Props) {
   const [selectedPath, setSelectedPath] = useState(diff.files[0]?.path ?? '')
   const [expanded, setExpanded] = useState(true)
   const [showContext, setShowContext] = useState(true)
@@ -50,7 +50,7 @@ export function RunDiffView({ diff, demo = false, onClose, onDecision }: Props) 
       {diff.status === 'unavailable' && <div className="diff-stale"><AlertTriangle size={14} /> {diff.reason || 'A diff is unavailable for this run.'}</div>}
       {error && <div className="diff-stale"><AlertTriangle size={14} /> {error}</div>}
       <div className="diff-body"><nav className="diff-file-list" aria-label="Changed files">{diff.files.map((file) => <button key={file.path} className={selected?.path === file.path ? 'selected' : ''} onClick={() => { setSelectedPath(file.path); setExpanded(true) }}><FileCode2 size={13} /><span title={file.path}>{file.path}</span><small>{file.status}</small></button>)}</nav><div className="diff-file-content">{selected ? <><div className="diff-file-heading"><div><strong>{selected.path}</strong><span>{selected.status} · <b className="diff-additions">+{selected.added}</b> <b className="diff-deletions">−{selected.deleted}</b></span></div><div className="diff-file-actions"><button onClick={() => setShowContext((value) => !value)}>{showContext ? 'Hide' : 'Show'} context</button><button onClick={() => setExpanded((value) => !value)}>{expanded ? 'Collapse' : 'Expand'} diff</button></div></div>{selected.note && <div className="diff-file-note">{selected.note}</div>}{expanded && (selected.patch ? <div className="diff-lines" role="region" aria-label={`Diff for ${selected.path}`}>{lines.map((line, index) => !showContext && line.kind === 'context' ? null : <div className={`diff-line ${line.kind}`} key={`${selected.path}-${index}`}><span className="diff-line-number">{line.oldNumber ?? ''}</span><span className="diff-line-number">{line.newNumber ?? ''}</span><code>{line.text || ' '}</code></div>)}</div> : <div className="diff-no-preview">No text preview is available for this file.</div>)}</> : <div className="diff-no-preview">No files changed during this run.</div>}</div></div>
-      <footer className="diff-modal-footer"><span>{diff.decision === 'accepted' ? 'Accepted · files kept as they are.' : diff.decision === 'reverted' ? 'Reverted · files restored to their before-run contents.' : 'This compares the workspace before and after the run. Pre-existing edits are excluded; edits by other processes during the run may also appear.'}</span>{diff.final && diff.status === 'ready' && diff.file_count > 0 && !diff.decision && <div className="diff-review-actions"><button disabled={!demo && (busy || !diff.can_revert || diff.stale === true)} title={!diff.can_revert ? 'A before-run snapshot is unavailable for this review' : diff.stale ? 'Files have changed since this review was saved' : undefined} onClick={() => void decide('revert')}>Revert changes</button><button disabled={!demo && busy} onClick={() => void decide('accept')}>Accept changes</button></div>}</footer>
+      <footer className="diff-modal-footer"><span>{readOnly ? 'Read-only evidence captured from a disposable eval worktree.' : diff.decision === 'accepted' ? 'Accepted · files kept as they are.' : diff.decision === 'reverted' ? 'Reverted · files restored to their before-run contents.' : 'This compares the workspace before and after the run. Pre-existing edits are excluded; edits by other processes during the run may also appear.'}</span>{!readOnly && diff.final && diff.status === 'ready' && diff.file_count > 0 && !diff.decision && <div className="diff-review-actions"><button disabled={!demo && (busy || !diff.can_revert || diff.stale === true)} title={!diff.can_revert ? 'A before-run snapshot is unavailable for this review' : diff.stale ? 'Files have changed since this review was saved' : undefined} onClick={() => void decide('revert')}>Revert changes</button><button disabled={!demo && busy} onClick={() => void decide('accept')}>Accept changes</button></div>}</footer>
     </section>
   </div>
 }

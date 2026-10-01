@@ -9,26 +9,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_runtime import AgentRuntimeManager, CodexAgentAdapter
-from database import Base, SessionLocal, engine, get_db, models
-from database.schemas import (
-    GitCommitParams,
-    MessageRecord,
-    RpcRequest,
-    RunDiffParams,
-    SessionCreate,
-    SessionEventRecord,
-    SessionHistoryParams,
-    SessionHistoryRecord,
-    SessionIdParams,
-    SessionRecord,
-    SessionSend,
-    WorkspaceCreate,
-    WorkspaceIdParams,
-    WorkspaceRecord,
-    WorkspaceRename,
-)
-from event_broker import AgentEvent, EventBroker
 from fastapi import (
     Depends,
     FastAPI,
@@ -40,11 +20,42 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
-from run_diffs import RunDiffService
-from settings import settings
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from agent_runtime import AgentRuntimeManager, CodexAgentAdapter
+from artifacts import ArtifactStore, StoredArtifact
+from database import SessionLocal, engine, get_db, models
+from database.migrations import run_migrations
+from database.schemas import (
+    GitCommitParams,
+    MessageRecord,
+    RpcRequest,
+    RunArtifactRecord,
+    RunDiffParams,
+    RunEventRecord,
+    RunEventsParams,
+    RunIdParams,
+    RunRecord,
+    SessionCreate,
+    SessionHistoryParams,
+    SessionHistoryRecord,
+    SessionIdParams,
+    SessionRecord,
+    SessionSend,
+    WorkspaceCreate,
+    WorkspaceIdParams,
+    WorkspaceRecord,
+    WorkspaceRename,
+)
+from evals.scheduler import EvalScheduler, reconcile_interrupted_evals
+from evals.service import EvalService, EvalServiceError
+from evals.worktrees import WorktreeService
+from event_broker import AgentEvent, EventBroker
+from event_payloads import event_payload_preview
+from run_diffs import RunDiffService
+from settings import settings
 
 
 def _workspace_dict(workspace: models.Workspace) -> dict[str, Any]:
@@ -53,6 +64,10 @@ def _workspace_dict(workspace: models.Workspace) -> dict[str, Any]:
 
 def _session_dict(session: models.Session) -> dict[str, Any]:
     return SessionRecord.model_validate(session).model_dump(mode="json")
+
+
+def _run_dict(run: models.Run) -> dict[str, Any]:
+    return RunRecord.model_validate(run).model_dump(mode="json")
 
 
 def _rpc_result(request_id: int | str | None, result: Any) -> dict[str, Any]:
@@ -168,10 +183,18 @@ class RpcMethodError(Exception):
 
 class RpcDispatcher:
     def __init__(
-        self, runtime: AgentRuntimeManager, diff_service: RunDiffService | None = None
+        self,
+        runtime: AgentRuntimeManager,
+        diff_service: RunDiffService | None = None,
+        artifact_store: ArtifactStore | None = None,
     ) -> None:
         self.runtime = runtime
         self.diff_service = diff_service
+        worktrees = WorktreeService(settings.resolved_eval_worktree_directory)
+        self.eval_scheduler = EvalScheduler(
+            SessionLocal, runtime, worktrees, diff_service, artifact_store
+        )
+        self.eval_service = EvalService(worktrees, self.eval_scheduler, artifact_store)
         self._workspace_locks: dict[int, asyncio.Lock] = {}
 
     async def dispatch(self, request: RpcRequest, db: AsyncSession) -> dict[str, Any]:
@@ -185,6 +208,8 @@ class RpcDispatcher:
                 request.id, -32602, "Invalid method parameters", exc.errors()
             )
         except RpcMethodError as exc:
+            return _rpc_error(request.id, exc.code, exc.message)
+        except EvalServiceError as exc:
             return _rpc_error(request.id, exc.code, exc.message)
         except ValueError as exc:
             return _rpc_error(request.id, -32602, str(exc))
@@ -232,6 +257,8 @@ class RpcDispatcher:
     async def _dispatch_method(
         self, method: str, params: dict[str, Any], db: AsyncSession
     ) -> Any:
+        if method.startswith("eval."):
+            return await self.eval_service.dispatch(method, params, db)
         if method == "health.check":
             await db.execute(text("SELECT 1"))
             return {"status": "ok"}
@@ -382,12 +409,12 @@ class RpcDispatcher:
             ).all()
             events = (
                 await db.scalars(
-                    select(models.SessionEvent)
+                    select(models.RunEvent)
                     .where(
-                        models.SessionEvent.session_id == session.id,
-                        models.SessionEvent.id > values.after_sequence,
+                        models.RunEvent.session_id == session.id,
+                        models.RunEvent.id > values.after_sequence,
                     )
-                    .order_by(models.SessionEvent.id)
+                    .order_by(models.RunEvent.id)
                     .limit(values.limit + 1)
                 )
             ).all()
@@ -399,7 +426,7 @@ class RpcDispatcher:
                     MessageRecord.model_validate(message) for message in messages
                 ],
                 events=[
-                    SessionEventRecord(
+                    RunEventRecord(
                         id=event.id,
                         run_id=event.run_id,
                         sequence=event.id,
@@ -412,6 +439,62 @@ class RpcDispatcher:
                 last_sequence=events[-1].id if events else values.after_sequence,
                 has_more=has_more,
             ).model_dump(mode="json")
+        if method == "run.get":
+            values = _params(RunIdParams, params)
+            run = await db.get(models.Run, values.run_id)
+            if not run:
+                raise RpcMethodError(-32004, "Run not found")
+            return _run_dict(run)
+        if method == "run.events":
+            values = _params(RunEventsParams, params)
+            run = await db.get(models.Run, values.run_id)
+            if not run:
+                raise RpcMethodError(-32004, "Run not found")
+            events = (
+                await db.scalars(
+                    select(models.RunEvent)
+                    .where(
+                        models.RunEvent.run_id == run.id,
+                        models.RunEvent.id > values.after_sequence,
+                    )
+                    .order_by(models.RunEvent.id)
+                    .limit(values.limit + 1)
+                )
+            ).all()
+            has_more = len(events) > values.limit
+            events = events[: values.limit]
+            return {
+                "run": _run_dict(run),
+                "events": [
+                    RunEventRecord(
+                        id=event.id,
+                        run_id=event.run_id,
+                        sequence=event.id,
+                        type=event.event_type,
+                        payload=event.payload,
+                        created_at=event.created_at,
+                    ).model_dump(mode="json")
+                    for event in events
+                ],
+                "last_sequence": events[-1].id if events else values.after_sequence,
+                "has_more": has_more,
+            }
+        if method == "run.artifacts":
+            values = _params(RunIdParams, params)
+            run = await db.get(models.Run, values.run_id)
+            if not run:
+                raise RpcMethodError(-32004, "Run not found")
+            artifacts = (
+                await db.scalars(
+                    select(models.RunArtifact)
+                    .where(models.RunArtifact.run_id == run.id)
+                    .order_by(models.RunArtifact.id)
+                )
+            ).all()
+            return [
+                RunArtifactRecord.model_validate(artifact).model_dump(mode="json")
+                for artifact in artifacts
+            ]
         if method == "run.diff.get":
             values = _params(RunDiffParams, params)
             run = await db.get(models.Run, values.run_id)
@@ -478,7 +561,13 @@ class RpcDispatcher:
                     raise RpcMethodError(
                         -32010, "Another run is active in this workspace"
                     )
-                run = models.Run(session_id=session.id, status="queued", prompt=content)
+                run = models.Run(
+                    kind="chat",
+                    session_id=session.id,
+                    workspace_path=workspace.path,
+                    status="queued",
+                    prompt=content,
+                )
                 db.add(run)
                 await db.flush()
                 db.add(
@@ -517,7 +606,16 @@ class RpcDispatcher:
         if method in {"session.cancel", "session.stop"}:
             values = _params(SessionIdParams, params)
             await self._session(db, values.session_id)
-            if not await self.runtime.cancel(values.session_id):
+            active_run_id = await db.scalar(
+                select(models.Run.id)
+                .where(
+                    models.Run.session_id == values.session_id,
+                    models.Run.status.in_(("queued", "running", "stopping")),
+                )
+                .order_by(models.Run.id.desc())
+                .limit(1)
+            )
+            if active_run_id is None or not await self.runtime.cancel(active_run_id):
                 raise RpcMethodError(-32011, "No active run exists for this session")
             return {"accepted": True, "session_id": values.session_id}
         if method in {"session.subscribe", "session.unsubscribe"}:
@@ -531,7 +629,7 @@ class RpcDispatcher:
 
 
 async def persist_event(
-    session_id: int,
+    session_id: int | None,
     run_id: int,
     event_type: str,
     payload: dict[str, Any],
@@ -539,31 +637,35 @@ async def persist_event(
 ) -> AgentEvent:
     now = datetime.now(UTC)
     async with SessionLocal() as db:
-        session = await db.get(models.Session, session_id)
+        session = await db.get(models.Session, session_id) if session_id else None
         run = await db.get(models.Run, run_id)
-        if not session or not run:
-            raise RuntimeError("Cannot persist an event for a missing session or run")
-        event = models.SessionEvent(
+        if not run or run.session_id != session_id:
+            raise RuntimeError(
+                "Cannot persist an event for a missing or mismatched run"
+            )
+        payload_preview = event_payload_preview(payload)
+        event = models.RunEvent(
             session_id=session_id,
             run_id=run_id,
             source_event_id=source_event_id,
             event_type=event_type,
-            payload=payload,
+            payload=payload_preview,
             created_at=now,
         )
         db.add(event)
         if event_type == "session.started":
-            session.status = "running"
+            if session:
+                session.status = "running"
             run.status = "running"
             run.pid = payload.get("pid")
             run.started_at = now
         elif event_type == "codex.thread.started":
             thread_id = payload.get("thread_id")
-            if isinstance(thread_id, str):
+            if session and isinstance(thread_id, str):
                 session.codex_thread_id = thread_id
         elif event_type == "assistant.text":
             content = payload.get("content")
-            if isinstance(content, str) and content:
+            if session and isinstance(content, str) and content:
                 db.add(
                     models.Message(
                         session_id=session_id,
@@ -573,11 +675,13 @@ async def persist_event(
                     )
                 )
         elif event_type == "session.stopping":
-            session.status = "stopping"
+            if session:
+                session.status = "stopping"
             run.status = "stopping"
         elif event_type in {"session.completed", "session.failed", "session.cancelled"}:
             status = event_type.removeprefix("session.")
-            session.status = status
+            if session:
+                session.status = status
             run.status = status
             run.return_code = payload.get("return_code")
             run.error = payload.get("error")
@@ -588,7 +692,7 @@ async def persist_event(
             session_id=session_id,
             run_id=run_id,
             type=event_type,
-            payload=payload,
+            payload=payload_preview,
             sequence=event.id,
             created_at=now.isoformat(),
         )
@@ -606,6 +710,24 @@ async def mark_run_start_failed(session_id: int, run_id: int, error: str) -> Non
         if session:
             session.status = "failed"
         await db.commit()
+
+
+async def persist_artifact(run_id: int, artifact: StoredArtifact) -> dict[str, Any]:
+    async with SessionLocal() as db:
+        if not await db.get(models.Run, run_id):
+            raise RuntimeError("Cannot persist an artifact for a missing run")
+        record = models.RunArtifact(
+            run_id=run_id,
+            artifact_type=artifact.artifact_type,
+            relative_path=artifact.relative_path,
+            sha256=artifact.sha256,
+            byte_size=artifact.byte_size,
+            metadata_json=artifact.metadata,
+        )
+        db.add(record)
+        await db.commit()
+        await db.refresh(record)
+        return RunArtifactRecord.model_validate(record).model_dump(mode="json")
 
 
 async def reconcile_interrupted_runs() -> None:
@@ -651,9 +773,9 @@ async def reconcile_interrupted_runs() -> None:
 async def lifespan(app: FastAPI):
     if not settings.local_auth_token:
         raise RuntimeError("LOCAL_AUTH_TOKEN is required")
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await run_migrations(engine, database_url=settings.database_url)
     await reconcile_interrupted_runs()
+    await reconcile_interrupted_evals(SessionLocal)
     broker = EventBroker()
     adapter = CodexAgentAdapter(
         command=settings.codex_command,
@@ -662,16 +784,19 @@ async def lifespan(app: FastAPI):
         skip_git_repo_check=settings.codex_skip_git_repo_check,
     )
     diff_service = RunDiffService(SessionLocal)
+    artifact_store = ArtifactStore(settings.resolved_artifact_directory)
     runtime = AgentRuntimeManager(
         broker,
         adapter,
         persist_event,
         timeout_seconds=settings.agent_timeout_seconds,
         diff_finalizer=lambda run_id: diff_service.refresh(run_id, final=True),
+        artifact_store=artifact_store,
+        artifact_persister=persist_artifact,
     )
     app.state.broker = broker
     app.state.runtime = runtime
-    app.state.dispatcher = RpcDispatcher(runtime, diff_service)
+    app.state.dispatcher = RpcDispatcher(runtime, diff_service, artifact_store)
     yield
     await runtime.shutdown()
     await engine.dispose()
