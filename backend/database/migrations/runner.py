@@ -19,6 +19,7 @@ from .versions import (
     V5_FINGERPRINT,
     V6_FINGERPRINT,
     V7_FINGERPRINT,
+    V8_FINGERPRINT,
     upgrade_v1,
     upgrade_v2,
     upgrade_v3,
@@ -26,6 +27,7 @@ from .versions import (
     upgrade_v5,
     upgrade_v6,
     upgrade_v7,
+    upgrade_v8,
 )
 
 
@@ -66,6 +68,7 @@ def _default_migrations() -> tuple[Migration, ...]:
         Migration(5, "eval_suites_and_configs", upgrade_v5, V5_FINGERPRINT),
         Migration(6, "eval_experiments", upgrade_v6, V6_FINGERPRINT),
         Migration(7, "eval_steps", upgrade_v7, V7_FINGERPRINT),
+        Migration(8, "eval_progress_events", upgrade_v8, V8_FINGERPRINT),
     )
 
 

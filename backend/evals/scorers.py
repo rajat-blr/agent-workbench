@@ -14,6 +14,7 @@ ScoreStatus = Literal["pass", "fail", "unavailable"]
 AttemptOutcome = Literal["pass", "fail", "infra_error"]
 FileAssertionKind = Literal["exists", "absent", "contains", "regex", "json_value"]
 MAX_EVIDENCE_CHARS = 16_000
+MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ class ScoreResult:
     value: dict[str, Any]
     summary: str
     evidence: dict[str, Any]
+    full_output: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -74,7 +76,12 @@ def _safe_path(worktree: str | Path, relative_path: str) -> Path:
     return candidate
 
 
-async def score_command(spec: CommandScorerSpec, worktree: str | Path) -> ScoreResult:
+async def score_command(
+    spec: CommandScorerSpec,
+    worktree: str | Path,
+    *,
+    capture_full_output: bool = False,
+) -> ScoreResult:
     if not spec.argv:
         return ScoreResult(
             spec.key,
@@ -113,31 +120,59 @@ async def score_command(spec: CommandScorerSpec, worktree: str | Path) -> ScoreR
             "Command scorer could not start",
             {"error": str(exc)},
         )
+
+    async def read_output(stream: asyncio.StreamReader) -> bytes:
+        result = bytearray()
+        while chunk := await stream.read(64 * 1024):
+            if len(result) + len(chunk) > MAX_COMMAND_OUTPUT_BYTES:
+                raise OverflowError("Scorer output limit exceeded")
+            result.extend(chunk)
+        return bytes(result)
+
+    tasks = [
+        asyncio.create_task(read_output(process.stdout)),
+        asyncio.create_task(read_output(process.stderr)),
+        asyncio.create_task(process.wait()),
+    ]
     try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=spec.timeout_seconds
+        stdout, stderr, _ = await asyncio.wait_for(
+            asyncio.gather(*tasks), timeout=spec.timeout_seconds
         )
-    except TimeoutError:
+    except (TimeoutError, OverflowError, asyncio.CancelledError) as exc:
         if os.name != "nt":
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-        else:
+        elif process.returncode is None:
             process.kill()
-        await process.wait()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        # Drain residual pipe buffers after killing the group so paused transports
+        # cannot prevent process reaping after an output-limit failure.
+        await process.communicate()
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        oversized = isinstance(exc, OverflowError)
         return ScoreResult(
             spec.key,
             1,
             spec.required,
             "unavailable",
             None,
-            {"timeout_seconds": spec.timeout_seconds},
-            "Command scorer timed out",
+            {"output_limit_bytes_per_stream": MAX_COMMAND_OUTPUT_BYTES}
+            if oversized
+            else {"timeout_seconds": spec.timeout_seconds},
+            "Command scorer exceeded the output limit"
+            if oversized
+            else "Command scorer timed out",
             {},
         )
-    stdout_preview, stdout_truncated = _bounded(stdout.decode(errors="replace"))
-    stderr_preview, stderr_truncated = _bounded(stderr.decode(errors="replace"))
+    stdout_text = stdout.decode(errors="replace")
+    stderr_text = stderr.decode(errors="replace")
+    stdout_preview, stdout_truncated = _bounded(stdout_text)
+    stderr_preview, stderr_truncated = _bounded(stderr_text)
     passed = process.returncode in spec.expected_exit_codes
     return ScoreResult(
         spec.key,
@@ -156,6 +191,9 @@ async def score_command(spec: CommandScorerSpec, worktree: str | Path) -> ScoreR
             "stdout_truncated": stdout_truncated,
             "stderr_truncated": stderr_truncated,
         },
+        {"stdout": stdout_text, "stderr": stderr_text}
+        if capture_full_output and (stdout_truncated or stderr_truncated)
+        else None,
     )
 
 

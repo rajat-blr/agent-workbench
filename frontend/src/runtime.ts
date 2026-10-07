@@ -18,23 +18,34 @@ export type RunDiff = { run_id: number; status: 'capturing' | 'ready' | 'unavail
 export type EvalCaseRevision = { id: number; case_id: number; revision: number; status: 'draft' | 'published'; content_hash: string | null; workspace_id: number; source_run_id: number | null; starting_patch_artifact_id: number | null; verifier_artifact_id: number | null; base_sha: string | null; prompt: string; setup_spec: Record<string, unknown>[]; scorer_spec: Record<string, unknown>[]; path_policy: Record<string, unknown>; validation_status: 'not_validated' | 'valid' | 'invalid'; validation_details: Record<string, unknown>; published_at: string | null; created_at: string }
 export type EvalCase = { id: number; title: string; description: string; created_at: string; updated_at: string; latest_revision: EvalCaseRevision }
 export type EvalSuite = { id: number; name: string; description: string; created_at: string; updated_at: string; latest_version: { id: number; version: number; status: 'draft' | 'frozen'; content_hash: string | null; frozen_at: string | null; cases: { case_id: number; title: string; revision_id: number; revision: number; ordinal: number }[] } }
-export type EvalConfig = { id: number; name: string; description: string; created_at: string; snapshot: { id: number; content_hash: string; model: string | null; reasoning_effort: string | null; instructions: Record<string, unknown>[]; codex_config: Record<string, unknown>; sandbox_policy: Record<string, unknown>; cli_version: string | null; uncontrolled_inputs: Record<string, unknown>[]; created_at: string } }
-export type EvalAttemptSummary = { id: number; case_revision_id: number; config_snapshot_id: number; sample_index: number; retry_index: number; run_id: number | null; status: string; outcome: string | null; failure_category: string | null; setup_duration_ms: number | null; agent_duration_ms: number | null; scoring_duration_ms: number | null; input_tokens: number | null; cached_input_tokens: number | null; output_tokens: number | null; reasoning_output_tokens: number | null }
-export type EvalResults = { configurations: { config_snapshot_id: number; passed: number; failed: number; infrastructure_errors: number; evaluable: number; pass_rate: number | null; confidence_low: number | null; confidence_high: number | null }[]; paired: { a_only_pass: number; b_only_pass: number; both_pass: number; both_fail: number }; verdict: 'inconclusive' | 'configuration_a_better' | 'configuration_b_better' }
+export type EvalConfig = { id: number; name: string; description: string; created_at: string; snapshot: { id: number; content_hash: string; model: string | null; reasoning_effort: string | null; instructions: Record<string, unknown>[]; codex_config: Record<string, unknown>; sandbox_policy: Record<string, unknown>; cli_version: string | null; uncontrolled_inputs: Record<string, unknown>[]; reproducibility_warnings?: string[]; created_at: string } }
+export type EvalAttemptSummary = { id: number; case_revision_id: number; case_title?: string | null; config_snapshot_id: number; sample_index: number; retry_index: number; run_id: number | null; status: string; outcome: string | null; failure_category: string | null; setup_duration_ms: number | null; agent_duration_ms: number | null; scoring_duration_ms: number | null; input_tokens: number | null; cached_input_tokens: number | null; output_tokens: number | null; reasoning_output_tokens: number | null }
+export type EvalResults = {
+  configurations: { config_snapshot_id: number; passed: number; failed: number; infrastructure_errors: number; evaluable: number; pass_rate: number | null; confidence_low: number | null; confidence_high: number | null; pending: number; outcome_counts: Record<string, number>; durations_ms: Record<string, { median: number | null; min: number | null; max: number | null; observed: number }>; tokens: Record<string, { total: number | null; observed: number }> }[]
+  paired: { a_only_pass: number; b_only_pass: number; both_pass: number; both_fail: number; sample_count: number; discordant: number; p_value: number | null; inference_available: boolean }
+  comparisons: { case_revision_id: number; sample_index: number; category: string; attempt_ids: number[] }[]
+  verdict: 'inconclusive' | 'configuration_a_better' | 'configuration_b_better'
+  verdict_summary: string
+  is_final: boolean
+}
 export type EvalExperiment = { id: number; name: string; suite_version_id: number; status: 'ready' | 'running' | 'completed' | 'cancelled' | 'failed'; samples_per_case: number; concurrency: number; timeout_seconds: number; config_snapshot_ids: number[]; configurations: { snapshot_id: number; name: string }[]; attempt_count: number; attempt_status_counts: Record<string, number>; attempts: EvalAttemptSummary[]; results: EvalResults; created_at: string; started_at: string | null; completed_at: string | null }
 export type EvalStep = { sequence: number; source_event_start_id: number; source_event_end_id: number; source_item_id: string | null; kind: string; title: string; status: string; duration_ms: number | null; signature: string; flags: string[]; summary: string; normalizer_version: number }
 export type EvalAttemptEvent = { id: number; type: string; payload: Record<string, unknown>; created_at: string }
-export type EvalAttemptDetail = { id: number; experiment_id: number; case: { id: number; title: string } | null; case_revision_id: number; configuration: { snapshot_id: number; name: string; model: string | null; reasoning_effort: string | null } | null; sample_index: number; retry_index: number; run_id: number | null; status: string; outcome: string | null; failure_category: string | null; durations_ms: { setup: number | null; agent: number | null; scoring: number | null }; tokens: { input: number | null; cached_input: number | null; output: number | null; reasoning_output: number | null }; scores: { key: string; required: boolean; passed: boolean | null; value: Record<string, unknown>; summary: string; evidence: Record<string, unknown> }[]; diff: RunDiff | null; artifacts: { id: number; type: string; sha256: string; byte_size: number; metadata: Record<string, unknown> }[] }
+export type EvalScorerOutput = { artifact_id: number; attempt_id: number; scorer_key: string | null; stdout: string; stderr: string; offset: number; next_offset: number; has_more: boolean; total_length: number }
+export type EvalAttemptDetail = { id: number; experiment_id: number; case: { id: number; title: string } | null; case_revision_id: number; configuration: { snapshot_id: number; name: string; model: string | null; reasoning_effort: string | null } | null; sample_index: number; retry_index: number; run_id: number | null; status: string; outcome: string | null; failure_category: string | null; durations_ms: { setup: number | null; agent: number | null; scoring: number | null }; tokens: { input: number | null; cached_input: number | null; output: number | null; reasoning_output: number | null }; scores: { key: string; required: boolean; passed: boolean | null; value: Record<string, unknown>; summary: string; evidence: Record<string, unknown>; artifact_id: number | null }[]; diff: RunDiff | null; artifacts: { id: number; type: string; sha256: string; byte_size: number; metadata: Record<string, unknown> }[] }
 export type EvalPreflight = { case_count: number; config_count: number; samples_per_case: number; attempt_count: number; repositories: string[]; invalid_case_revision_ids: number[]; configuration_differences: string[]; warnings: string[]; isolation: string; network_enabled: boolean }
+export type EvalExperimentEvent = { experiment_id: number; type: string; payload: Record<string, unknown>; sequence: number; created_at: string }
 export type RpcResponse<T> = { jsonrpc: '2.0'; id: number | string | null; result?: T; error?: { code: number; message: string; data?: unknown } }
 
 type EventHandler = (event: ActivityEvent & { session_id: number }) => void
+type ExperimentEventHandler = (event: EvalExperimentEvent) => void
 
 export class RpcClient {
   private socket: WebSocket | null = null
   private requestId = 0
   private pending = new Map<number, { resolve: (value: unknown) => void; reject: (reason: Error) => void }>()
   private eventHandler: EventHandler | null = null
+  private experimentEventHandler: ExperimentEventHandler | null = null
   private statusHandler: ((status: ConnectionStatus) => void) | null = null
   private reconnectTimer: number | undefined
   private endpoint = 'ws://127.0.0.1:8000/ws'
@@ -80,9 +91,13 @@ export class RpcClient {
     }, 1800)
   }
 
-  private handleMessage(message: RpcResponse<unknown> | { jsonrpc: '2.0'; method: string; params: ActivityEvent & { session_id: number } }) {
+  private handleMessage(message: RpcResponse<unknown> | { jsonrpc: '2.0'; method: string; params: (ActivityEvent & { session_id: number }) | EvalExperimentEvent }) {
     if ('method' in message && message.method === 'session.event') {
-      this.eventHandler?.(message.params)
+      this.eventHandler?.(message.params as ActivityEvent & { session_id: number })
+      return
+    }
+    if ('method' in message && message.method === 'eval.experiment.event') {
+      this.experimentEventHandler?.(message.params as EvalExperimentEvent)
       return
     }
     if (!('id' in message) || typeof message.id !== 'number') return
@@ -115,6 +130,7 @@ export class RpcClient {
   }
 
   onEvent(handler: EventHandler) { this.eventHandler = handler }
+  onExperimentEvent(handler: ExperimentEventHandler | null) { this.experimentEventHandler = handler }
   onStatus(handler: (status: ConnectionStatus) => void) { this.statusHandler = handler }
   private rejectPending(error: Error) {
     for (const request of this.pending.values()) request.reject(error)

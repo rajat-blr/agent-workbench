@@ -148,7 +148,8 @@ async def test_v1_database_is_baselined_without_losing_data(tmp_path) -> None:
         (4, "eval_cases"),
         (5, "eval_suites_and_configs"),
         (6, "eval_experiments"),
-        (7, "eval_steps"),
+            (7, "eval_steps"),
+            (8, "eval_progress_events"),
     ]
     assert run == (
         "chat",
@@ -178,6 +179,7 @@ async def test_v1_database_is_baselined_without_losing_data(tmp_path) -> None:
         "eval_attempts",
         "eval_scores",
         "eval_steps",
+        "eval_experiment_events",
     } <= tables
     assert "session_events" not in tables
     await engine.dispose()

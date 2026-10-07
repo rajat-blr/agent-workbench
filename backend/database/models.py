@@ -550,6 +550,20 @@ class EvalScore(Base):
     attempt: Mapped[EvalAttempt] = relationship(back_populates="scores")
 
 
+class EvalExperimentEvent(Base):
+    __tablename__ = "eval_experiment_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    experiment_id: Mapped[int] = mapped_column(
+        ForeignKey("eval_experiments.id", ondelete="CASCADE"), index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(100))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class EvalStep(Base):
     __tablename__ = "eval_steps"
     __table_args__ = (

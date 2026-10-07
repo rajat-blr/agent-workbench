@@ -5,6 +5,14 @@ const fs = require('node:fs')
 const net = require('node:net')
 const path = require('node:path')
 
+// Allow release checks to use a disposable profile without touching real chats.
+const profileDirectory = process.env.AGENT_WORKBENCH_USER_DATA_DIR
+if (profileDirectory) {
+  if (!path.isAbsolute(profileDirectory)) throw new Error('AGENT_WORKBENCH_USER_DATA_DIR must be absolute')
+  fs.mkdirSync(profileDirectory, { recursive: true })
+  app.setPath('userData', profileDirectory)
+}
+
 const isDev = !app.isPackaged
 const startsBackend = process.env.START_BACKEND !== 'false'
 const backendAuthToken = process.env.BACKEND_AUTH_TOKEN || (startsBackend ? crypto.randomBytes(32).toString('hex') : '')

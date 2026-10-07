@@ -12,6 +12,8 @@ from .v0006_eval_experiments import FINGERPRINT as V6_FINGERPRINT
 from .v0006_eval_experiments import upgrade as upgrade_v6
 from .v0007_eval_steps import FINGERPRINT as V7_FINGERPRINT
 from .v0007_eval_steps import upgrade as upgrade_v7
+from .v0008_eval_progress_events import FINGERPRINT as V8_FINGERPRINT
+from .v0008_eval_progress_events import upgrade as upgrade_v8
 
 __all__ = [
     "V1_FINGERPRINT",
@@ -21,6 +23,7 @@ __all__ = [
     "V5_FINGERPRINT",
     "V6_FINGERPRINT",
     "V7_FINGERPRINT",
+    "V8_FINGERPRINT",
     "upgrade_v1",
     "upgrade_v2",
     "upgrade_v3",
@@ -28,4 +31,5 @@ __all__ = [
     "upgrade_v5",
     "upgrade_v6",
     "upgrade_v7",
+    "upgrade_v8",
 ]

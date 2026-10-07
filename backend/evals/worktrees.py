@@ -166,6 +166,43 @@ class WorktreeService:
             )
         await self._git(worktree.repository_path, "worktree", "prune")
 
+    async def cleanup_orphans(self, retained_paths: set[Path]) -> list[Path]:
+        quarantined: list[Path] = []
+        retained = {path.resolve() for path in retained_paths}
+        for candidate in self.root.glob("attempt-*"):
+            path = candidate.resolve()
+            if not path.is_dir() or path in retained or not path.is_relative_to(
+                self.root
+            ):
+                continue
+            repository: Path | None = None
+            try:
+                common_raw = (
+                    await self._git(path, "rev-parse", "--git-common-dir")
+                ).decode().strip()
+                common = Path(common_raw)
+                if not common.is_absolute():
+                    common = (path / common).resolve()
+                repository = common.parent if common.name == ".git" else common
+                base_sha = (
+                    await self._git(path, "rev-parse", "HEAD")
+                ).decode().strip()
+                await self.cleanup(
+                    ProvisionedWorktree(0, repository, path, base_sha)
+                )
+            except WorktreeError:
+                quarantine = (
+                    self.root / f"quarantine-{path.name}-{uuid.uuid4().hex[:8]}"
+                ).resolve()
+                try:
+                    path.rename(quarantine)
+                    quarantined.append(quarantine)
+                    if repository:
+                        await self._git(repository, "worktree", "prune")
+                except (OSError, WorktreeError):
+                    quarantined.append(path)
+        return quarantined
+
     async def changed_paths(self, worktree: ProvisionedWorktree) -> set[str]:
         if not worktree.path.is_dir():
             raise WorktreeError("Attempt worktree no longer exists")

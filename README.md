@@ -26,6 +26,18 @@ Electron runs the desktop UI and starts a bundled FastAPI backend on your machin
 
 The SQLite database lives in the operating system's application-data directory, not in this repository. Conversation history is local to that computer; there is no cloud sync or built-in backup/restore yet. Deleting the app's data will delete that history. Codex itself may communicate with OpenAI services through the user's CLI sign-in.
 
+## Evals configuration capture (current source build)
+
+In **Evals lab → Configurations**, select a workspace to record its standard instruction chain and the installed Codex CLI version. Capture observes global guidance first, then the Git root down to the selected workspace; a non-empty `AGENTS.override.md` takes precedence over `AGENTS.md`. Nested files below the selected workspace are not scanned. The source build follows the [official instruction-discovery order](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
+
+Snapshots retain an ordered, redacted copy for comparison. Capture skips symlinks, limits instruction text to 32 KiB, and reports unavailable or truncated sources. Recognizable credential assignments and bearer/API-key patterns are redacted, but this is not a general secret detector: do not put secrets in instructions or preambles.
+
+Captured files and CLI versions are **observed**, not pinned execution inputs. Attempts still use the case baseline's project files and the installed executable; custom instruction fallback names and external authentication remain uncontrolled. Only explicit model/reasoning settings, the instruction preamble, and the restricted sandbox/network policy are applied. Generic project settings are not forwarded to the executor. Existing snapshots are immutable; capture again to record changed inputs.
+
+Command scorers cap output at 4 MiB per stream. Exceeding the limit is reported as unavailable/infrastructure failure, not a pass/fail judgment. Output within the limit retains a bounded preview and, when needed, a full-output artifact. Cancellation and timeout terminate the scorer process group on macOS/POSIX.
+
+`npm --prefix frontend run build:demo` builds the backend-free demo. Its Evals example is explicitly **synthetic**, read-only, and includes improvements, regressions, unchanged cases, and an infrastructure error. Open its experiment to inspect results, filters, scorer evidence, and example diffs. It is not evidence of real model performance. Run `npm --prefix frontend run test:demo` to check fixture consistency and read-only behavior.
+
 ## Develop locally
 
 You need Python 3.14, [`uv`](https://docs.astral.sh/uv/), Node.js, npm, and an installed/authenticated Codex CLI.
@@ -56,7 +68,7 @@ To run project checks:
 ```sh
 cd backend
 .venv/bin/pytest -q
-.venv/bin/ruff check main.py settings.py event_broker.py agent_runtime.py codebase_map.py run_diffs.py database tests
+.venv/bin/ruff check .
 cd ../frontend
 npm run build
 npm run lint

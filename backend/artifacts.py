@@ -25,6 +25,7 @@ class ArtifactWriter:
         run_id: int,
         artifact_type: str,
         metadata: dict[str, Any] | None = None,
+        relative_owner: str | None = None,
     ) -> None:
         if run_id <= 0:
             raise ValueError("Artifact run ID must be positive")
@@ -37,6 +38,7 @@ class ArtifactWriter:
         self.run_id = run_id
         self.artifact_type = artifact_type
         self.metadata = dict(metadata or {})
+        self.relative_owner = relative_owner or f"run-{run_id}"
         self._finished = False
         self._temporary_directory = root / ".tmp"
         self._temporary_directory.mkdir(parents=True, exist_ok=True)
@@ -61,7 +63,7 @@ class ArtifactWriter:
 
         content = self._temporary_path.read_bytes()
         digest = hashlib.sha256(content).hexdigest()
-        relative = Path(f"run-{self.run_id}") / self.artifact_type
+        relative = Path(self.relative_owner) / self.artifact_type
         destination_directory = self.root / relative
         destination_directory.mkdir(parents=True, exist_ok=True)
         destination = destination_directory / f"{digest}-{self._token}.jsonl.gz"
@@ -96,9 +98,32 @@ class ArtifactStore:
     ) -> ArtifactWriter:
         return ArtifactWriter(self.root, run_id, artifact_type, metadata)
 
+    def open_case_writer(
+        self,
+        revision_id: int,
+        artifact_type: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> ArtifactWriter:
+        return ArtifactWriter(
+            self.root,
+            revision_id,
+            artifact_type,
+            metadata,
+            relative_owner=f"eval-case-{revision_id}",
+        )
+
     def read_bytes(self, relative_path: str) -> bytes:
         path = (self.root / relative_path).resolve()
         if not path.is_relative_to(self.root) or not path.is_file():
             raise FileNotFoundError("Artifact is unavailable")
         with gzip.open(path, "rb") as source:
             return source.read()
+
+    def read_verified_bytes(self, relative_path: str, expected_sha256: str) -> bytes:
+        path = (self.root / relative_path).resolve()
+        if not path.is_relative_to(self.root) or not path.is_file():
+            raise FileNotFoundError("Artifact is unavailable")
+        compressed = path.read_bytes()
+        if hashlib.sha256(compressed).hexdigest() != expected_sha256:
+            raise ValueError("Artifact checksum does not match its database record")
+        return gzip.decompress(compressed)

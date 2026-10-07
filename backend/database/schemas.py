@@ -149,6 +149,11 @@ class EvalCaseCreateFromRun(BaseModel):
     description: str = Field(default="", max_length=10_000)
 
 
+class EvalVerifierFile(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
+    content: str = Field(max_length=1_000_000)
+
+
 class EvalCaseUpdateDraft(BaseModel):
     case_id: int = Field(gt=0)
     revision_id: int = Field(gt=0)
@@ -159,6 +164,7 @@ class EvalCaseUpdateDraft(BaseModel):
     setup_spec: list[dict[str, Any]] | None = None
     scorer_spec: list[dict[str, Any]] | None = None
     path_policy: dict[str, Any] | None = None
+    verifier_files: list[EvalVerifierFile] | None = Field(default=None, max_length=100)
 
 
 class EvalCaseIdParams(BaseModel):
@@ -192,11 +198,13 @@ class EvalSuiteIdParams(BaseModel):
 
 
 class EvalConfigCapture(BaseModel):
+    workspace_id: int | None = Field(default=None, gt=0)
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=10_000)
     model: str | None = Field(default=None, max_length=100)
     reasoning_effort: str | None = Field(default=None, max_length=32)
     instructions: list[dict[str, Any]] = Field(default_factory=list)
+    instruction_preamble: str = Field(default="", max_length=20_000)
     codex_config: dict[str, Any] = Field(default_factory=dict)
     sandbox_policy: dict[str, Any] = Field(default_factory=dict)
     cli_version: str | None = Field(default=None, max_length=100)
@@ -227,3 +235,15 @@ class EvalExperimentIdParams(BaseModel):
 
 class EvalAttemptIdParams(BaseModel):
     attempt_id: int = Field(gt=0)
+
+
+class EvalAttemptArtifactParams(EvalAttemptIdParams):
+    artifact_id: int = Field(gt=0)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=16_000, ge=1, le=64_000)
+
+
+class EvalExperimentEventsParams(BaseModel):
+    experiment_id: int = Field(gt=0)
+    after_sequence: int = Field(default=0, ge=0)
+    limit: int = Field(default=200, ge=1, le=1000)

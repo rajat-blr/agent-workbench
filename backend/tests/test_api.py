@@ -11,7 +11,7 @@ import main
 from artifacts import ArtifactStore
 from database import Base, models
 from database.schemas import RpcRequest
-from evals.service import EvalService
+from evals.service import EvalService, _revision_payload
 from evals.worktrees import WorktreeService
 
 
@@ -460,6 +460,254 @@ async def test_eval_case_validation_and_publish_use_disposable_worktree(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("held_out", [False, True])
+async def test_revise_preserves_published_input_and_copies_owned_verifier(
+    tmp_path, held_out
+):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    await asyncio.to_thread(initialize_git_fixture, repository)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'revisions.db'}")
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    store = ArtifactStore(tmp_path / "artifacts")
+    dispatcher = main.RpcDispatcher(RuntimeStub())
+    dispatcher.eval_service = EvalService(
+        WorktreeService(tmp_path / "worktrees"), artifact_store=store
+    )
+    async with factory() as db:
+        workspace = await dispatch(
+            dispatcher,
+            db,
+            "workspace.create",
+            {"path": str(repository), "name": "Fixture"},
+        )
+        case = await dispatch(
+            dispatcher,
+            db,
+            "eval.case.create",
+            {
+                "title": "Revision fixture",
+                "workspace_id": workspace["id"],
+                "prompt": "Original task",
+            },
+        )
+        identity = {"case_id": case["id"], "revision_id": case["latest_revision"]["id"]}
+        premature = await dispatcher.dispatch(
+            RpcRequest(id=2, method="eval.case.revise", params=identity), db
+        )
+        assert premature["error"]["code"] == -32010
+        await dispatch(
+            dispatcher,
+            db,
+            "eval.case.update_draft",
+            {
+                **identity,
+                "setup_spec": [
+                    {
+                        "type": "command",
+                        "argv": [sys.executable, "-c", "print('setup')"],
+                    }
+                ],
+                "scorer_spec": [
+                    {
+                        "type": "command",
+                        "key": "regression",
+                        "argv": [sys.executable, "-c", "raise SystemExit(1)"],
+                    },
+                    {"type": "diff", "key": "scope", "allowed": ["README.md"]},
+                ],
+                **(
+                    {
+                        "verifier_files": [
+                            {"path": "hidden/check.py", "content": "assert False\n"}
+                        ]
+                    }
+                    if held_out
+                    else {}
+                ),
+            },
+        )
+        await dispatch(dispatcher, db, "eval.case.validate", identity)
+        published = await dispatch(dispatcher, db, "eval.case.publish", identity)
+        original = published["latest_revision"]
+        suite = await dispatch(
+            dispatcher, db, "eval.suite.create", {"name": "Frozen original"}
+        )
+        suite_identity = {
+            "suite_id": suite["id"],
+            "version_id": suite["latest_version"]["id"],
+        }
+        await dispatch(
+            dispatcher,
+            db,
+            "eval.suite.update_draft",
+            {**suite_identity, "case_revision_ids": [identity["revision_id"]]},
+        )
+        frozen = await dispatch(dispatcher, db, "eval.suite.freeze", suite_identity)
+        revised = await dispatch(dispatcher, db, "eval.case.revise", identity)
+        draft = revised["latest_revision"]
+        assert draft["revision"] == 2 and draft["status"] == "draft"
+        assert draft["validation_status"] == "not_validated"
+        assert draft["content_hash"] is None and draft["published_at"] is None
+        for field in (
+            "prompt",
+            "base_sha",
+            "workspace_id",
+            "setup_spec",
+            "scorer_spec",
+            "path_policy",
+        ):
+            assert draft[field] == original[field]
+        repeated = await dispatch(dispatcher, db, "eval.case.revise", identity)
+        assert repeated["latest_revision"]["id"] == draft["id"]
+        if held_out:
+            assert draft["verifier_artifact_id"] != original["verifier_artifact_id"]
+            copied = await db.get(models.RunArtifact, draft["verifier_artifact_id"])
+            source = await db.get(models.RunArtifact, original["verifier_artifact_id"])
+            assert copied.relative_path.startswith(
+                f"eval-case-{draft['id']}/verifier_bundle/"
+            )
+            assert store.read_verified_bytes(
+                copied.relative_path, copied.sha256
+            ) == store.read_verified_bytes(source.relative_path, source.sha256)
+        await dispatch(
+            dispatcher,
+            db,
+            "eval.case.update_draft",
+            {
+                "case_id": case["id"],
+                "revision_id": draft["id"],
+                "prompt": "Only change README.md",
+            },
+        )
+        validated = await dispatch(
+            dispatcher,
+            db,
+            "eval.case.validate",
+            {"case_id": case["id"], "revision_id": draft["id"]},
+        )
+        assert validated["latest_revision"]["validation_status"] == "valid"
+        source_row = await db.get(models.EvalCaseRevision, original["id"])
+        await db.refresh(source_row)
+        assert _revision_payload(source_row) == original
+        unchanged_suite = await dispatch(
+            dispatcher, db, "eval.suite.get", {"suite_id": suite["id"]}
+        )
+        for field in ("id", "version", "status", "content_hash", "cases"):
+            assert (
+                unchanged_suite["latest_version"][field]
+                == frozen["latest_version"][field]
+            )
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_held_out_verifier_is_materialized_for_validation_and_checksum_checked(
+    tmp_path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    await asyncio.to_thread(initialize_git_fixture, repository)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'held-out.db'}")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    artifact_store = ArtifactStore(tmp_path / "artifacts")
+    dispatcher = main.RpcDispatcher(RuntimeStub())
+    dispatcher.eval_service = EvalService(
+        WorktreeService(tmp_path / "worktrees"), artifact_store=artifact_store
+    )
+
+    async with session_factory() as db:
+        workspace = await dispatch(
+            dispatcher,
+            db,
+            "workspace.create",
+            {"path": str(repository), "name": "Fixture"},
+        )
+        created = await dispatch(
+            dispatcher,
+            db,
+            "eval.case.create",
+            {
+                "title": "Held-out verifier",
+                "workspace_id": workspace["id"],
+                "prompt": "Create done.txt",
+            },
+        )
+        revision_id = created["latest_revision"]["id"]
+        updated = await dispatch(
+            dispatcher,
+            db,
+            "eval.case.update_draft",
+            {
+                "case_id": created["id"],
+                "revision_id": revision_id,
+                "setup_spec": [
+                    {
+                        "type": "command",
+                        "argv": [
+                            sys.executable,
+                            "-c",
+                            "from pathlib import Path; Path('setup.txt').write_text('ready')",
+                        ],
+                    }
+                ],
+                "verifier_files": [
+                    {
+                        "path": "tests/hidden_verifier.py",
+                        "content": "from pathlib import Path\n"
+                        "assert Path('setup.txt').read_text() == 'ready'\n"
+                        "raise SystemExit(0 if Path('done.txt').exists() else 1)\n",
+                    }
+                ],
+                "scorer_spec": [
+                    {
+                        "type": "command",
+                        "key": "hidden-verifier",
+                        "argv": [sys.executable, "tests/hidden_verifier.py"],
+                    }
+                ],
+            },
+        )
+        validated = await dispatch(
+            dispatcher,
+            db,
+            "eval.case.validate",
+            {"case_id": created["id"], "revision_id": revision_id},
+        )
+        artifact = await db.get(
+            models.RunArtifact, updated["latest_revision"]["verifier_artifact_id"]
+        )
+
+    assert validated["latest_revision"]["validation_status"] == "valid"
+    assert validated["latest_revision"]["validation_details"]["held_out_paths"] == [
+        "tests/hidden_verifier.py"
+    ]
+    assert (
+        validated["latest_revision"]["validation_details"]["base_results"][0]["summary"]
+        == "Command exited with code 1"
+    )
+    assert artifact is not None
+    assert not (repository / "tests" / "hidden_verifier.py").exists()
+    assert not (repository / "setup.txt").exists()
+
+    (artifact_store.root / artifact.relative_path).write_bytes(b"tampered")
+    async with session_factory() as db:
+        invalid = await dispatch(
+            dispatcher,
+            db,
+            "eval.case.validate",
+            {"case_id": created["id"], "revision_id": revision_id},
+        )
+    assert invalid["latest_revision"]["validation_status"] == "invalid"
+    assert "checksum" in invalid["latest_revision"]["validation_details"]["problems"][0]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_eval_suites_freeze_and_config_snapshots_are_redacted(tmp_path) -> None:
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'catalog.db'}")
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -527,7 +775,12 @@ async def test_eval_suites_freeze_and_config_snapshots_are_redacted(tmp_path) ->
             dispatcher,
             db,
             "eval.config.capture",
-            {"name": "Candidate", "model": "codex-b", "reasoning_effort": "high"},
+            {
+                "name": "Candidate",
+                "model": "codex-b",
+                "reasoning_effort": "high",
+                "instruction_preamble": "Keep changes focused.",
+            },
         )
         difference = await dispatch(
             dispatcher,
@@ -557,6 +810,9 @@ async def test_eval_suites_freeze_and_config_snapshots_are_redacted(tmp_path) ->
     assert frozen["latest_version"]["cases"][0]["revision_id"] == revision.id
     assert len(frozen["latest_version"]["content_hash"]) == 64
     assert config_a["snapshot"]["codex_config"]["api_token"] == "[REDACTED]"
+    assert config_b["snapshot"]["instructions"] == [
+        {"kind": "preamble", "content": "Keep changes focused."}
+    ]
     assert {item["field"] for item in difference["differences"]} >= {
         "model",
         "reasoning_effort",
@@ -565,9 +821,14 @@ async def test_eval_suites_freeze_and_config_snapshots_are_redacted(tmp_path) ->
     assert preflight["configuration_differences"] == [
         "model",
         "reasoning_effort",
+        "instructions",
         "codex_config",
-        "sandbox_policy",
     ]
+    assert config_a["snapshot"]["reproducibility_warnings"]
+    assert config_b["snapshot"]["sandbox_policy"] == {
+        "mode": "workspace-write",
+        "network": False,
+    }
     assert experiment["status"] == "ready"
     assert experiment["attempt_status_counts"] == {"queued": 4}
     assert [item["config_snapshot_id"] for item in experiment["attempts"]] == [
@@ -577,6 +838,58 @@ async def test_eval_suites_freeze_and_config_snapshots_are_redacted(tmp_path) ->
         config_b["snapshot"]["id"],
     ]
     assert listed_experiments[0]["id"] == experiment["id"]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_config_captures_workspace_instructions_and_verified_cli(
+    tmp_path, monkeypatch
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    await asyncio.to_thread(initialize_git_fixture, repository)
+    (repository / "AGENTS.md").write_text("Project guidance\napi_key=never-store-me\n")
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    (profile / "AGENTS.override.md").write_text("Global override")
+    monkeypatch.setenv("CODEX_HOME", str(profile))
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        "evals.service.detect_cli_version", AsyncMock(return_value="codex-cli 1.2.3")
+    )
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'capture.db'}")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    dispatcher = main.RpcDispatcher(
+        RuntimeStub(), worktrees=WorktreeService(tmp_path / "worktrees")
+    )
+    async with session_factory() as db:
+        workspace = models.Workspace(path=str(repository), name="Capture")
+        db.add(workspace)
+        await db.commit()
+        values = {
+            "name": "Captured",
+            "workspace_id": workspace.id,
+            "model": "pinned-model",
+            "instruction_preamble": "Task preamble",
+        }
+        captured = await dispatch(dispatcher, db, "eval.config.capture", values)
+        repeated = await dispatch(dispatcher, db, "eval.config.capture", values)
+        snapshot = await db.get(models.EvalConfigSnapshot, captured["snapshot"]["id"])
+        assert "never-store-me" not in str(snapshot.instructions_json)
+    result = captured["snapshot"]
+    assert result["cli_version"] == "codex-cli 1.2.3"
+    assert [item["kind"] for item in result["instructions"]] == [
+        "file",
+        "file",
+        "preamble",
+    ]
+    assert result["instructions"][0]["path"] == "$CODEX_HOME/AGENTS.override.md"
+    assert result["instructions"][1]["redacted"] is True
+    assert result["content_hash"] == repeated["snapshot"]["content_hash"]
+    assert result["uncontrolled_inputs"]
     await engine.dispose()
 
 

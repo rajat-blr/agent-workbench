@@ -1,0 +1,190 @@
+{
+  "kind": "synthetic packaged lifecycle checks, not model evaluation",
+  "date": "2026-10-07",
+  "scope_revisions": {
+    "suite": {
+      "id": 1,
+      "name": "T3 Code realistic regressions",
+      "description": "Five external T3 regression cases with separate held-out verifiers.",
+      "created_at": "2026-10-06T06:16:01",
+      "updated_at": "2026-10-07T05:57:55.348327",
+      "latest_version": {
+        "id": 3,
+        "version": 2,
+        "status": "frozen",
+        "content_hash": "4d32cd1365508199a6470693f5b05f78149c906792dc98aa6b5b20cdde3c886d",
+        "frozen_at": "2026-10-07T05:57:55.348327+00:00",
+        "cases": [
+          {
+            "case_id": 1,
+            "title": "T3 Code: trimmed-ids",
+            "revision_id": 6,
+            "revision": 2,
+            "ordinal": 0
+          },
+          {
+            "case_id": 2,
+            "title": "T3 Code: worker-recovery",
+            "revision_id": 7,
+            "revision": 2,
+            "ordinal": 1
+          },
+          {
+            "case_id": 3,
+            "title": "T3 Code: cache-pruning",
+            "revision_id": 8,
+            "revision": 2,
+            "ordinal": 2
+          },
+          {
+            "case_id": 4,
+            "title": "T3 Code: concurrent-settings",
+            "revision_id": 9,
+            "revision": 2,
+            "ordinal": 3
+          },
+          {
+            "case_id": 5,
+            "title": "T3 Code: indexeddb-recovery",
+            "revision_id": 10,
+            "revision": 2,
+            "ordinal": 4
+          }
+        ]
+      }
+    },
+    "revision_ids": [
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "agent_attempts_launched": 0
+  },
+  "historical_comparison": {
+    "id": 2,
+    "status": "completed",
+    "attempt_count": 10
+  },
+  "hard_crash_fixture_process_manually_reaped": true,
+  "cancellation": {
+    "id": 3,
+    "status": "cancelled",
+    "attempts": [
+      {
+        "id": 12,
+        "status": "cancelled",
+        "outcome": "cancelled",
+        "retry_index": 0,
+        "sample_index": 0,
+        "failure_category": null,
+        "run_id": 17
+      },
+      {
+        "id": 13,
+        "status": "cancelled",
+        "outcome": "cancelled",
+        "retry_index": 0,
+        "sample_index": 1,
+        "failure_category": null,
+        "run_id": null
+      }
+    ]
+  },
+  "after_restart_before_resume": {
+    "id": 4,
+    "status": "failed",
+    "attempts": [
+      {
+        "id": 14,
+        "status": "interrupted",
+        "outcome": "infra_error",
+        "retry_index": 0,
+        "sample_index": 0,
+        "failure_category": "backend_restart",
+        "run_id": 18
+      },
+      {
+        "id": 15,
+        "status": "queued",
+        "outcome": null,
+        "retry_index": 0,
+        "sample_index": 1,
+        "failure_category": null,
+        "run_id": null
+      }
+    ]
+  },
+  "after_explicit_resume": {
+    "id": 4,
+    "status": "completed",
+    "attempts": [
+      {
+        "id": 14,
+        "status": "interrupted",
+        "outcome": "infra_error",
+        "retry_index": 0,
+        "sample_index": 0,
+        "failure_category": "backend_restart",
+        "run_id": 18
+      },
+      {
+        "id": 15,
+        "status": "completed",
+        "outcome": "pass",
+        "retry_index": 0,
+        "sample_index": 1,
+        "failure_category": null,
+        "run_id": 19
+      },
+      {
+        "id": 16,
+        "status": "completed",
+        "outcome": "pass",
+        "retry_index": 1,
+        "sample_index": 0,
+        "failure_category": null,
+        "run_id": 20
+      }
+    ]
+  },
+  "interactive_experiment": {
+    "id": 5,
+    "status": "cancelled",
+    "attempts": [
+      {
+        "id": 17,
+        "status": "cancelled",
+        "outcome": "cancelled",
+        "retry_index": 0,
+        "sample_index": 0,
+        "failure_category": null,
+        "run_id": 23
+      },
+      {
+        "id": 18,
+        "status": "cancelled",
+        "outcome": "cancelled",
+        "retry_index": 0,
+        "sample_index": 1,
+        "failure_category": null,
+        "run_id": null
+      }
+    ]
+  },
+  "chat_regression": {
+    "session_id": 4,
+    "run_ids": [
+      21,
+      22
+    ]
+  },
+  "database_scope": "temporary copy only; active database remains at v1",
+  "ui_verification": {
+    "start_cancel_accessibility": "passed",
+    "comparison_summary_accessibility": "passed",
+    "visual_layout": "not verified: stale screenshots followed by ScreenCaptureKit error -3811",
+    "resize_and_long_trace": "not verified"
+  }
+}

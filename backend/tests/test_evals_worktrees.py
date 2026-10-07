@@ -90,3 +90,17 @@ async def test_provision_requires_full_commit_and_repository_root(tmp_path) -> N
         await service.provision(repository, base_sha[:8], 3)
     with pytest.raises(WorktreeError, match="repository root"):
         await service.provision(nested, base_sha, 3)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_orphans_removes_unregistered_eval_worktree(tmp_path) -> None:
+    repository = tmp_path / "repository"
+    base_sha = create_repository(repository)
+    service = WorktreeService(tmp_path / "worktrees")
+    orphan = await service.provision(repository, base_sha, 4)
+
+    quarantined = await service.cleanup_orphans(set())
+
+    assert quarantined == []
+    assert not orphan.path.exists()
+    assert str(orphan.path) not in git(repository, "worktree", "list", "--porcelain")

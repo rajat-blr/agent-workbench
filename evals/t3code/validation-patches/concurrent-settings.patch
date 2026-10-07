@@ -1,0 +1,40 @@
+diff --git a/apps/desktop/src/backend/DesktopServerExposure.ts b/apps/desktop/src/backend/DesktopServerExposure.ts
+index e5bd1103..8deafeef 100644
+--- a/apps/desktop/src/backend/DesktopServerExposure.ts
++++ b/apps/desktop/src/backend/DesktopServerExposure.ts
+@@ -17,7 +17,6 @@ import * as Layer from "effect/Layer";
+ import * as Option from "effect/Option";
+ import * as Ref from "effect/Ref";
+ import * as Schema from "effect/Schema";
+-import * as Semaphore from "effect/Semaphore";
+ import * as HttpClient from "effect/http/HttpClient";
+ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+ 
+@@ -420,10 +419,6 @@ export const make = Effect.gen(function* () {
+   const httpClient = yield* HttpClient.HttpClient;
+   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
+   const stateRef = yield* Ref.make(initialRuntimeState());
+-  // Each change reads the runtime state, persists settings, then writes the
+-  // state back. Run them one at a time so a change never writes over another
+-  // with values it read before that change persisted.
+-  const changePermit = yield* Semaphore.make(1);
+ 
+   // Cache the `tailscale status` spawn for the TTL. On macOS, the Mac App
+   // Store Tailscale CLI lives inside Tailscale's sandbox container, so each
+@@ -497,7 +492,7 @@ export const make = Effect.gen(function* () {
+       state: toContractState(resolved.state),
+       requiresRelaunch: change.changed || requiresBackendRelaunch(previous, resolved.state),
+     };
+-  }, changePermit.withPermit);
++  });
+ 
+   const setTailscaleServeEnabled = Effect.fn("desktop.serverExposure.setTailscaleServeEnabled")(
+     function* (input: { readonly enabled: boolean; readonly port?: number }) {
+@@ -532,7 +527,6 @@ export const make = Effect.gen(function* () {
+         requiresRelaunch: result.changed,
+       };
+     },
+-    changePermit.withPermit,
+   );
+ 
+   const getAdvertisedEndpoints = Effect.gen(function* () {

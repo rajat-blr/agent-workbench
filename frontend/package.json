@@ -11,6 +11,7 @@
     "build:demo": "tsc -b && vite build --mode demo",
     "build:backend": "cd ../backend && uv run --group packaging pyinstaller --clean --noconfirm agent-workbench-backend.spec",
     "lint": "oxlint",
+    "test:demo": "node --experimental-strip-types --test tests/demoEvals.test.mjs",
     "package": "npm run build && npm run build:backend && electron-forge package",
     "make": "npm run build && npm run build:backend && electron-forge make",
     "preview": "vite preview",

@@ -1,0 +1,208 @@
+{
+  "schema_version": 1,
+  "status": "validated_candidates_not_importable",
+  "upstream_repository": "https://github.com/pingdotgg/t3code",
+  "reference_commit": "8f75697b9e022033f2615cb32e3c6ddc61c52353",
+  "validation": {
+    "date": "2026-10-06",
+    "node": "24.18.0",
+    "pnpm": "11.10.0",
+    "vitest": "5.0.1",
+    "dependency_install": "scoped, frozen lockfile, lifecycle scripts disabled",
+    "reference": {
+      "files_passed": 5,
+      "tests_passed": 138,
+      "exit_code": 0
+    },
+    "agent_runs": 0
+  },
+  "packaging_required": [
+    "Export history-free per-case baseline repositories with no upstream remote or solution commits.",
+    "Remove held-out regression tests from committed agent baselines; store verifier bundles outside all agent-visible paths.",
+    "Commit the buggy production state so scorer diff checks see only agent edits.",
+    "Verify prepared baselines fail and reference solutions pass through the application scorer.",
+    "Import cases and run a bounded pilot before a paired comparison."
+  ],
+  "cases": [
+    {
+      "id": "trimmed-ids",
+      "task_prompt": "Fix trimmed non-empty string schemas so whitespace-only values are rejected by construction, validation, encoding, and decoding, including Unicode whitespace. Valid padded strings must retain stable normalized round trips. Preserve forward-compatible array encoding behavior for invalid elements. Limit the change to contracts; do not change mobile routes.",
+      "upstream_fix_commit": "2d162d157dfb0eea7e205c508f47d663ab4e8bf9",
+      "upstream_parent_commit": "efeeb7737bed89bbfc6dc81662058f8ce7fba2ea",
+      "production_path": "packages/contracts/src/baseSchemas.ts",
+      "verifier_test_path": "packages/contracts/src/baseSchemas.test.ts",
+      "validation_patch": "validation-patches/trimmed-ids.patch",
+      "validation_patch_sha256": "c255e61107e7f1308bf619c09958c9f8506dbb51f3f8d25c300ce57227f2437a",
+      "baseline_kind": "production-only historical fix reversal on common reference commit",
+      "test_command": [
+        "corepack",
+        "pnpm",
+        "exec",
+        "vp",
+        "test",
+        "run",
+        "packages/contracts/src/baseSchemas.test.ts",
+        "--config",
+        "vite.config.ts",
+        "--testTimeout",
+        "5000"
+      ],
+      "buggy_validation": {
+        "slug": "trimmed-ids",
+        "failed": 92,
+        "passed": 11,
+        "total": 103,
+        "exit": 1,
+        "failure_kind": "regression assertion"
+      },
+      "reference_validation": {
+        "tests_passed": 103,
+        "exit_code": 0
+      }
+    },
+    {
+      "id": "worker-recovery",
+      "task_prompt": "Fix the drainable worker lifecycle. A typed failure or defect in one item must be logged without preventing later queued items from processing. Item cancellation must not be logged as failure, enclosing scope cancellation must still stop the worker, and drain must resolve after shutdown, including enqueue attempts after closure.",
+      "upstream_fix_commit": "24e4b62c883eb67251bdfb07d2bf22cfd3987820",
+      "upstream_parent_commit": "4b3568b775d86fc699938ec5a9ada773bad8b45f",
+      "production_path": "packages/shared/src/DrainableWorker.ts",
+      "verifier_test_path": "packages/shared/src/DrainableWorker.test.ts",
+      "validation_patch": "validation-patches/worker-recovery.patch",
+      "validation_patch_sha256": "9a0e76d12f88412e859ee7556ea24dd041360f17c806e95e311832da95c1a04f",
+      "baseline_kind": "production-only historical fix reversal on common reference commit",
+      "test_command": [
+        "corepack",
+        "pnpm",
+        "exec",
+        "vp",
+        "test",
+        "run",
+        "packages/shared/src/DrainableWorker.test.ts",
+        "--config",
+        "vite.config.ts",
+        "--testTimeout",
+        "5000"
+      ],
+      "buggy_validation": {
+        "slug": "worker-recovery",
+        "failed": 2,
+        "passed": 1,
+        "total": 3,
+        "exit": 1,
+        "failure_kind": "regression assertion"
+      },
+      "reference_validation": {
+        "tests_passed": 3,
+        "exit_code": 0
+      }
+    },
+    {
+      "id": "cache-pruning",
+      "task_prompt": "Fix filesystem PR-cache pruning so expired real cache entries are removed while unrelated files and directories are preserved, including files whose names merely start with the cache prefix. Keep fresh entries and existing age semantics.",
+      "upstream_fix_commit": "bfe40e6d2574447b0651bdb41337db743ddbe12c",
+      "upstream_parent_commit": "327a29ef56e215c69a5db5d0b6f8df89f04f5d5b",
+      "production_path": "apps/server/src/pullRequest/PullRequestReadCache.ts",
+      "verifier_test_path": "apps/server/src/pullRequest/PullRequestReadCache.test.ts",
+      "validation_patch": "validation-patches/cache-pruning.patch",
+      "validation_patch_sha256": "16f0248adcc60af290aba3e2ba73d79dd39ad712d092d215fad8a1aa1810900b",
+      "baseline_kind": "production-only historical fix reversal on common reference commit",
+      "test_command": [
+        "corepack",
+        "pnpm",
+        "exec",
+        "vp",
+        "test",
+        "run",
+        "apps/server/src/pullRequest/PullRequestReadCache.test.ts",
+        "--config",
+        "vite.config.ts",
+        "--testTimeout",
+        "5000"
+      ],
+      "buggy_validation": {
+        "slug": "cache-pruning",
+        "failed": 1,
+        "passed": 10,
+        "total": 11,
+        "exit": 1,
+        "failure_kind": "regression assertion"
+      },
+      "reference_validation": {
+        "tests_passed": 11,
+        "exit_code": 0
+      }
+    },
+    {
+      "id": "concurrent-settings",
+      "task_prompt": "Fix concurrent desktop server-exposure settings updates. If a mode change is saving while a Tailscale Serve setting is changed, both changes must survive in persisted settings and observable state. Preserve existing exposure behavior and avoid live network-service changes.",
+      "upstream_fix_commit": "327a29ef56e215c69a5db5d0b6f8df89f04f5d5b",
+      "upstream_parent_commit": "eef36a67c37fa74905fc7feaa836e5a81daa8685",
+      "production_path": "apps/desktop/src/backend/DesktopServerExposure.ts",
+      "verifier_test_path": "apps/desktop/src/backend/DesktopServerExposure.test.ts",
+      "validation_patch": "validation-patches/concurrent-settings.patch",
+      "validation_patch_sha256": "1bc918645bbe2cd75c8fe8a2eddd8196b6f9cf2b26e0eb28667317f5138dcc58",
+      "baseline_kind": "production-only historical fix reversal on common reference commit",
+      "test_command": [
+        "corepack",
+        "pnpm",
+        "exec",
+        "vp",
+        "test",
+        "run",
+        "apps/desktop/src/backend/DesktopServerExposure.test.ts",
+        "--config",
+        "vite.config.ts",
+        "--testTimeout",
+        "5000"
+      ],
+      "buggy_validation": {
+        "slug": "concurrent-settings",
+        "failed": 1,
+        "passed": 10,
+        "total": 11,
+        "exit": 1,
+        "failure_kind": "regression assertion"
+      },
+      "reference_validation": {
+        "tests_passed": 11,
+        "exit_code": 0
+      }
+    },
+    {
+      "id": "indexeddb-recovery",
+      "task_prompt": "Fix browser connection storage so a forced IndexedDB close invalidates the shared connection and subsequent concurrent reads reopen it once. Finalization must close the current connection. Preserve lazy opening, typed failures, and existing retry behavior.",
+      "upstream_fix_commit": "9c49228f5425f644cff9b41ae88ca564d40d79fa",
+      "upstream_parent_commit": "5afe18eaf9d20c1633b4ec9177c6c9309a8f3d99",
+      "production_path": "apps/web/src/connection/storage.ts",
+      "verifier_test_path": "apps/web/src/connection/storage.test.ts",
+      "validation_patch": "validation-patches/indexeddb-recovery.patch",
+      "validation_patch_sha256": "0124141ca57248bae3493269336ab9e54e251e6029a0eb64e6466b7060685f32",
+      "baseline_kind": "narrow historical bug reintroduction; preserves current DatabaseHandle API",
+      "test_command": [
+        "corepack",
+        "pnpm",
+        "exec",
+        "vp",
+        "test",
+        "run",
+        "apps/web/src/connection/storage.test.ts",
+        "--config",
+        "vite.config.ts",
+        "--testTimeout",
+        "5000"
+      ],
+      "buggy_validation": {
+        "slug": "indexeddb-recovery",
+        "failed": 1,
+        "passed": 9,
+        "total": 10,
+        "exit": 1,
+        "failure_kind": "regression assertion"
+      },
+      "reference_validation": {
+        "tests_passed": 10,
+        "exit_code": 0
+      }
+    }
+  ]
+}

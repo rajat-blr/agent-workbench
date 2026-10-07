@@ -49,7 +49,11 @@ from database.schemas import (
     WorkspaceRecord,
     WorkspaceRename,
 )
-from evals.scheduler import EvalScheduler, reconcile_interrupted_evals
+from evals.scheduler import (
+    EvalScheduler,
+    reconcile_eval_worktrees,
+    reconcile_interrupted_evals,
+)
 from evals.service import EvalService, EvalServiceError
 from evals.worktrees import WorktreeService
 from event_broker import AgentEvent, EventBroker
@@ -187,14 +191,28 @@ class RpcDispatcher:
         runtime: AgentRuntimeManager,
         diff_service: RunDiffService | None = None,
         artifact_store: ArtifactStore | None = None,
+        event_broker: EventBroker | None = None,
+        worktrees: WorktreeService | None = None,
     ) -> None:
         self.runtime = runtime
         self.diff_service = diff_service
-        worktrees = WorktreeService(settings.resolved_eval_worktree_directory)
-        self.eval_scheduler = EvalScheduler(
-            SessionLocal, runtime, worktrees, diff_service, artifact_store
+        worktrees = worktrees or WorktreeService(
+            settings.resolved_eval_worktree_directory
         )
-        self.eval_service = EvalService(worktrees, self.eval_scheduler, artifact_store)
+        self.eval_scheduler = EvalScheduler(
+            SessionLocal,
+            runtime,
+            worktrees,
+            diff_service,
+            artifact_store,
+            event_broker,
+        )
+        self.eval_service = EvalService(
+            worktrees,
+            self.eval_scheduler,
+            artifact_store,
+            cli_command=settings.codex_command,
+        )
         self._workspace_locks: dict[int, asyncio.Lock] = {}
 
     async def dispatch(self, request: RpcRequest, db: AsyncSession) -> dict[str, Any]:
@@ -776,6 +794,8 @@ async def lifespan(app: FastAPI):
     await run_migrations(engine, database_url=settings.database_url)
     await reconcile_interrupted_runs()
     await reconcile_interrupted_evals(SessionLocal)
+    worktrees = WorktreeService(settings.resolved_eval_worktree_directory)
+    await reconcile_eval_worktrees(SessionLocal, worktrees)
     broker = EventBroker()
     adapter = CodexAgentAdapter(
         command=settings.codex_command,
@@ -796,7 +816,9 @@ async def lifespan(app: FastAPI):
     )
     app.state.broker = broker
     app.state.runtime = runtime
-    app.state.dispatcher = RpcDispatcher(runtime, diff_service, artifact_store)
+    app.state.dispatcher = RpcDispatcher(
+        runtime, diff_service, artifact_store, broker, worktrees
+    )
     yield
     await runtime.shutdown()
     await engine.dispose()
@@ -871,6 +893,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept(subprotocol="agent-workbench")
     send_lock = asyncio.Lock()
     subscriptions: dict[int, asyncio.Task[None]] = {}
+    experiment_subscriptions: dict[int, asyncio.Task[None]] = {}
 
     async def send_json(message: dict[str, Any]) -> None:
         async with send_lock:
@@ -885,6 +908,21 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     {
                         "jsonrpc": "2.0",
                         "method": "session.event",
+                        "params": event.as_dict(),
+                    }
+                )
+
+    async def forward_experiment_events(
+        experiment_id: int, ready: asyncio.Event
+    ) -> None:
+        async with app.state.broker.subscribe_experiment(experiment_id) as queue:
+            ready.set()
+            while True:
+                event = await queue.get()
+                await send_json(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "eval.experiment.event",
                         "params": event.as_dict(),
                     }
                 )
@@ -916,13 +954,34 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 task = subscriptions.pop(session_id, None)
                 if task:
                     task.cancel()
+            elif request.method == "eval.experiment.subscribe" and response.get(
+                "result", {}
+            ).get("subscribed"):
+                experiment_id = int(request.params["experiment_id"])
+                if experiment_id not in experiment_subscriptions:
+                    ready = asyncio.Event()
+                    experiment_subscriptions[experiment_id] = asyncio.create_task(
+                        forward_experiment_events(experiment_id, ready)
+                    )
+                    await ready.wait()
+            elif request.method == "eval.experiment.unsubscribe":
+                experiment_id = int(request.params.get("experiment_id", 0))
+                task = experiment_subscriptions.pop(experiment_id, None)
+                if task:
+                    task.cancel()
             await send_json(response)
     except WebSocketDisconnect:
         pass
     finally:
         for task in subscriptions.values():
             task.cancel()
-        await asyncio.gather(*subscriptions.values(), return_exceptions=True)
+        for task in experiment_subscriptions.values():
+            task.cancel()
+        await asyncio.gather(
+            *subscriptions.values(),
+            *experiment_subscriptions.values(),
+            return_exceptions=True,
+        )
 
 
 if __name__ == "__main__":

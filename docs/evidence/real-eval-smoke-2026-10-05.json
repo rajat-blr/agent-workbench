@@ -1,0 +1,244 @@
+{
+  "recorded_at": "2026-10-05",
+  "execution": "Packaged macOS arm64 app with installed authenticated Codex CLI",
+  "cli_version": "codex-cli 0.159.3",
+  "baseline_sha": "3798ba2323c19e766d0ae04ec0ac0112d4d28a15",
+  "model_note": "CLI default; effective model was not recorded or pinned",
+  "experiment": {
+    "id": 1,
+    "name": "Real Codex normalization smoke",
+    "suite_version_id": 1,
+    "status": "completed",
+    "samples_per_case": 1,
+    "concurrency": 1,
+    "timeout_seconds": 180,
+    "config_snapshot_ids": [
+      1
+    ],
+    "configurations": [
+      {
+        "snapshot_id": 1,
+        "name": "Installed CLI · medium reasoning"
+      }
+    ],
+    "attempt_count": 1,
+    "attempt_status_counts": {
+      "completed": 1
+    },
+    "attempts": [
+      {
+        "id": 1,
+        "case_revision_id": 1,
+        "case_title": "Normalize whitespace in labels",
+        "config_snapshot_id": 1,
+        "sample_index": 0,
+        "retry_index": 0,
+        "run_id": 1,
+        "status": "completed",
+        "outcome": "pass",
+        "failure_category": null,
+        "setup_duration_ms": 0,
+        "agent_duration_ms": 32269,
+        "scoring_duration_ms": 55,
+        "input_tokens": 46453,
+        "cached_input_tokens": 42496,
+        "output_tokens": 433,
+        "reasoning_output_tokens": 0
+      }
+    ],
+    "results": {
+      "configurations": [
+        {
+          "config_snapshot_id": 1,
+          "passed": 1,
+          "failed": 0,
+          "infrastructure_errors": 0,
+          "evaluable": 1,
+          "pass_rate": 1,
+          "confidence_low": 0.20654931437723742,
+          "confidence_high": 1,
+          "outcome_counts": {
+            "pass": 1,
+            "fail": 0,
+            "infra_error": 0,
+            "timeout": 0,
+            "cancelled": 0,
+            "invalid_case": 0
+          },
+          "pending": 0,
+          "durations_ms": {
+            "setup": {
+              "median": 0,
+              "min": 0,
+              "max": 0,
+              "observed": 1
+            },
+            "agent": {
+              "median": 32269,
+              "min": 32269,
+              "max": 32269,
+              "observed": 1
+            },
+            "scoring": {
+              "median": 55,
+              "min": 55,
+              "max": 55,
+              "observed": 1
+            }
+          },
+          "tokens": {
+            "input_tokens": {
+              "total": 46453,
+              "observed": 1
+            },
+            "cached_input_tokens": {
+              "total": 42496,
+              "observed": 1
+            },
+            "output_tokens": {
+              "total": 433,
+              "observed": 1
+            },
+            "reasoning_output_tokens": {
+              "total": 0,
+              "observed": 1
+            }
+          }
+        }
+      ],
+      "paired": {
+        "a_only_pass": 0,
+        "b_only_pass": 0,
+        "both_pass": 0,
+        "both_fail": 0,
+        "sample_count": 0,
+        "discordant": 0,
+        "p_value": null,
+        "inference_available": false
+      },
+      "comparisons": [],
+      "verdict": "inconclusive",
+      "verdict_summary": "Single configuration: no paired comparison is available.",
+      "is_final": true
+    },
+    "created_at": "2026-10-05T06:35:05",
+    "started_at": "2026-10-05T06:35:37.156452",
+    "completed_at": "2026-10-05T06:36:09.675009"
+  },
+  "attempt": {
+    "id": 1,
+    "experiment_id": 1,
+    "case": {
+      "id": 1,
+      "title": "Normalize whitespace in labels"
+    },
+    "case_revision_id": 1,
+    "configuration": {
+      "snapshot_id": 1,
+      "name": "Installed CLI · medium reasoning",
+      "model": null,
+      "reasoning_effort": "medium"
+    },
+    "sample_index": 0,
+    "retry_index": 0,
+    "run_id": 1,
+    "status": "completed",
+    "outcome": "pass",
+    "failure_category": null,
+    "durations_ms": {
+      "setup": 0,
+      "agent": 32269,
+      "scoring": 55
+    },
+    "tokens": {
+      "input": 46453,
+      "cached_input": 42496,
+      "output": 433,
+      "reasoning_output": 0
+    },
+    "scores": [
+      {
+        "key": "held-out-normalization",
+        "required": true,
+        "passed": true,
+        "value": {
+          "exit_code": 0
+        },
+        "summary": "Command exited with an accepted code",
+        "evidence": {
+          "argv": [
+            "/Users/rajatvarma/Documents/UIagg/backend/.venv/bin/python",
+            ".eval/verify_labels.py"
+          ],
+          "stdout": "PASS: 7 held-out normalization assertions\n",
+          "stderr": "",
+          "stdout_truncated": false,
+          "stderr_truncated": false
+        },
+        "artifact_id": null
+      },
+      {
+        "key": "source-only",
+        "required": true,
+        "passed": true,
+        "value": {
+          "changed_paths": [
+            "labels.py"
+          ]
+        },
+        "summary": "Diff constraints passed",
+        "evidence": {
+          "outside_allowed": [],
+          "forbidden": [],
+          "missing_required": []
+        },
+        "artifact_id": null
+      }
+    ],
+    "diff": {
+      "run_id": 1,
+      "status": "ready",
+      "final": true,
+      "reason": null,
+      "files": [
+        {
+          "path": "labels.py",
+          "status": "modified",
+          "added": 1,
+          "deleted": 1,
+          "patch": "--- a/labels.py\n+++ b/labels.py\n@@ -1,3 +1,3 @@\n def normalize_label(value: str) -> str:\n     \"\"\"Normalize a label for display and matching.\"\"\"\n-    return value.lower()\n+    return \" \".join(value.split()).lower()",
+          "note": null,
+          "final_hash": "0722a1b49e1071b79284a729d39579950549e21b144df231faff2188d2e5e1df",
+          "final_mode": 420,
+          "revertable": true
+        }
+      ],
+      "file_count": 1,
+      "added": 1,
+      "deleted": 1,
+      "captured_at": "2026-10-05T06:36:09.572699+00:00",
+      "stale": null,
+      "decision": null,
+      "can_revert": false
+    },
+    "artifacts": [
+      {
+        "id": 2,
+        "type": "raw_jsonl",
+        "sha256": "0148e67b94bc3b32c4bf16f4ee96e447db7c738e10bdc4f5ffe0702b9c2ae266",
+        "byte_size": 1246,
+        "metadata": {
+          "content_type": "application/x-ndjson",
+          "compression": "gzip"
+        }
+      }
+    ]
+  },
+  "checks": {
+    "baseline_required_scorer_failed": true,
+    "live_fixture_unchanged": true,
+    "disposable_worktree_removed": true,
+    "raw_artifact_checksum_verified": true,
+    "packaged_ui_results_and_diff_inspected": true
+  }
+}

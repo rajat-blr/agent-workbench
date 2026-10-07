@@ -1,4 +1,5 @@
-import type { ActivityEvent, ConnectionStatus, GitStatus, RunDiff, Session, SessionHistory, StoredActivityEvent, StoredMessage, Workspace } from './runtime'
+import type { ActivityEvent, ConnectionStatus, EvalExperimentEvent, GitStatus, RunDiff, Session, SessionHistory, StoredActivityEvent, StoredMessage, Workspace } from './runtime'
+import { demoEvalRequest } from './demoEvals'
 
 type EventHandler = (event: ActivityEvent & { session_id: number }) => void
 
@@ -142,12 +143,14 @@ export class DemoRpcClient {
 
   async connect() { this.statusHandler?.('connected') }
   onEvent(_handler: EventHandler) { /* Recorded sessions do not emit live events. */ }
+  onExperimentEvent(_handler: ((event: EvalExperimentEvent) => void) | null) { /* Static demo has no live eval events. */ }
   onStatus(handler: (status: ConnectionStatus) => void) { this.statusHandler = handler }
   close() { /* Static demo data has no connection to close. */ }
 
   async request<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     let result: unknown
-    if (method === 'workspace.list') result = workspaces.map((workspace) => ({ ...workspace }))
+    if (method.startsWith('eval.')) result = demoEvalRequest(method, params)
+    else if (method === 'workspace.list') result = workspaces.map((workspace) => ({ ...workspace }))
     else if (method === 'session.list') result = sessions.map((session) => ({ ...session }))
     else if (method === 'session.subscribe' || method === 'session.unsubscribe') result = { ok: true }
     else if (method === 'session.history') {

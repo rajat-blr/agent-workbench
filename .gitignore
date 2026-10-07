@@ -2,6 +2,9 @@ frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 frontend/out/
+.eval-sources/
+.eval-validation/
+.eval-cases/
 backend/.venv/
 backend/__pycache__/
 backend/build/

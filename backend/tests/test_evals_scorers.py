@@ -1,8 +1,11 @@
+import asyncio
+import os
 import sys
 
 import pytest
 
 from evals.scorers import (
+    MAX_COMMAND_OUTPUT_BYTES,
     CommandScorerSpec,
     DiffConstraintSpec,
     FileAssertionSpec,
@@ -62,6 +65,73 @@ async def test_command_failure_and_timeout_are_distinct(tmp_path) -> None:
     assert (failed.status, failed.passed) == ("fail", False)
     assert failed.value == {"exit_code": 3}
     assert (timed_out.status, timed_out.passed) == ("unavailable", None)
+
+
+@pytest.mark.asyncio
+async def test_large_output_preserves_both_streams_and_bounds_excess(tmp_path) -> None:
+    result = await score_command(
+        CommandScorerSpec(
+            "large",
+            (
+                sys.executable,
+                "-c",
+                "import sys; print('a'*40000); print('b'*40000, file=sys.stderr)",
+            ),
+        ),
+        tmp_path,
+        capture_full_output=True,
+    )
+    assert result.status == "pass"
+    assert result.evidence["stdout_truncated"] and result.evidence["stderr_truncated"]
+    assert result.full_output == {
+        "stdout": "a" * 40000 + "\n",
+        "stderr": "b" * 40000 + "\n",
+    }
+    exceeded = await score_command(
+        CommandScorerSpec(
+            "excess",
+            (
+                sys.executable,
+                "-c",
+                f"import sys,time; sys.stdout.buffer.write(b'x'*{MAX_COMMAND_OUTPUT_BYTES + 65536}); sys.stdout.flush(); time.sleep(5)",
+            ),
+        ),
+        tmp_path,
+        capture_full_output=True,
+    )
+    assert exceeded.status == "unavailable" and exceeded.passed is None
+    assert "output limit" in exceeded.summary
+    assert exceeded.full_output is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process group assertion")
+async def test_cancelled_scorer_reaps_parent_and_stops_descendant(tmp_path) -> None:
+    child = "import pathlib,time; p=pathlib.Path('heartbeat');\nwhile True: p.write_text(str(time.time_ns())); time.sleep(.01)"
+    script = f"import os,pathlib,subprocess,sys; pathlib.Path('pid').write_text(str(os.getpid())); child=subprocess.Popen([sys.executable,'-c',{child!r}]); child.wait()"
+    task = asyncio.create_task(
+        score_command(
+            CommandScorerSpec("cancel", (sys.executable, "-c", script)), tmp_path
+        )
+    )
+    try:
+        async with asyncio.timeout(3):
+            while not (tmp_path / "heartbeat").exists():
+                await asyncio.sleep(0.01)
+        pid = int((tmp_path / "pid").read_text())
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+        await asyncio.sleep(0.05)
+        heartbeat = (tmp_path / "heartbeat").read_text()
+        await asyncio.sleep(0.1)
+        assert (tmp_path / "heartbeat").read_text() == heartbeat
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 def test_file_assertion_scorer_supports_all_mvp_assertions(tmp_path) -> None:
