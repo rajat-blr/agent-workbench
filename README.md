@@ -138,3 +138,7 @@ Five external T3 Code scenarios cover trimmed-ID schemas, worker failure/shutdow
 The v1 and scope-explicit v2 comparisons are **inconclusive**, not a model recommendation. V2 completed ten attempts, including a timeout overlapping host sleep; original outcomes and evidence are retained. See the [v1 comparison](docs/evals-t3code-comparison-report.md), [v2 comparison](docs/evals-t3code-v2-comparison-report.md), and [timeout investigation](docs/evals-timeout-investigation-2026-10-08.md).
 
 For verified packaging/lifecycle checks and remaining interactive restart/resume, window-resizing, real-demo, and release-signing work, see the [release checklist](docs/evals-release-checklist.md). Source-build capabilities do not imply full release sign-off.
+
+## License
+
+Licensed under the [MIT License](LICENSE). Third-party dependencies and external evaluation code retain their respective licenses.
