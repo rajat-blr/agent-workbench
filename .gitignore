@@ -12,6 +12,8 @@ backend/dist/
 *.pyc
 .DS_Store
 .env
+# Local product requirements documents (any capitalization or file format).
+*[Pp][Rr][Dd]*
 backend/validation.db
 backend/agent_workbench.db
 backend/agent_workbench.db-shm
