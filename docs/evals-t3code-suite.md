@@ -1,10 +1,10 @@
 # T3 Code realistic evaluation candidates
 
-Status: five cases packaged, scorer-verified, published, and frozen as suite v1
-in both the isolated test database and the active UI database. All five are
-visibly listed in Evals → Cases as Published and Valid. A real one-case T3 pilot
-has now passed all 11 held-out tests; the five-case agent run/comparison remains.
-See [the pilot report](evals-t3code-pilot-report.md).
+Status: five cases packaged, scorer-verified, and published. The active database
+now contains frozen suite v2 with scope-explicit prompts, alongside unchanged v1
+inputs and results. The original paired comparison completed ten attempts
+(medium 4/5, high 3/5; inconclusive). V2 has not been run against an agent.
+See [the comparison report](evals-t3code-comparison-report.md).
 
 ## Source and isolation
 
@@ -125,9 +125,20 @@ It can reuse matching published cases without overwriting unrelated records.
 2. Completed: all five cases in one paired medium/high experiment, with identical
    generalized scope guards and one attempt per case/configuration. Medium passed
    4/5 and high 3/5; verdict inconclusive. See [the comparison report](evals-t3code-comparison-report.md).
-3. Clarify allowed-file scope in future case prompts, review failed patches, and
-   complete interactive packaged-app release checks. Do not treat this small
-   public-code comparison as a broad configuration ranking.
+3. Completed on 2026-10-07: published scope-explicit revisions 6–10 and froze
+   suite v2 (version ID 3) in the active database after a consistent backup.
+   Each prompt now names exactly the production file already allowed by its
+   grader. All five revisions validated; setup, graders, baselines, and held-out
+   verifiers were retained. No new agent runs were launched. A row-level audit
+   confirmed existing chats, runs, v1 revisions, configurations, experiments,
+   scores, and frozen suite membership are unchanged. See [live v2 evidence](evidence/t3code-live-v2-2026-10-07.json).
+4. Completed on 2026-10-08: the user confirmed main results/configuration layouts
+   and trace scrolling. A ten-attempt v2 comparison reused snapshots 2/3: medium
+   passed three tasks, high two with one timeout; four evaluable pairs are
+   inconclusive. Artifacts, scope, cleanup, and historical records were audited.
+   See [v2 report](evals-t3code-v2-comparison-report.md). Supported-size checks,
+   release/demo work, and investigation of the timeout timing discrepancy remain.
+   Do not treat this small public-code comparison as a broad configuration ranking.
 
 Baseline/reference checks establish detectable local regressions; the completed
 comparison adds limited agent scenario evidence.

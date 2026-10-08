@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -28,6 +27,12 @@ from evals.statistics import token_usage
 from evals.verifier_bundles import materialize_verifier_bundle
 from evals.worktrees import ProvisionedWorktree, WorktreeError, WorktreeService
 from event_broker import EvalProgressEvent, EventBroker
+
+
+def _phase_time() -> float:
+    # Match asyncio deadlines. On macOS, uvloop's clock includes system sleep
+    # while Python's time.monotonic() does not. Never mix their clock domains.
+    return asyncio.get_running_loop().time()
 
 
 class EvalRuntime(Protocol):
@@ -414,7 +419,7 @@ class EvalScheduler:
             provisioned = await self.worktrees.provision(
                 repository_path, base_sha, attempt_id, starting_patch=starting_patch
             )
-            setup_started = time.monotonic()
+            setup_started = _phase_time()
             for raw in setup_spec:
                 if raw.get("type") != "command" or not isinstance(
                     raw.get("argv"), list
@@ -430,7 +435,7 @@ class EvalScheduler:
                 )
                 if result.status != "pass":
                     raise WorktreeError(f"Setup failed: {result.summary}")
-            setup_ms = int((time.monotonic() - setup_started) * 1000)
+            setup_ms = int((_phase_time() - setup_started) * 1000)
 
             async with self.session_factory() as db:
                 attempt = await db.get(models.EvalAttempt, attempt_id)
@@ -470,7 +475,7 @@ class EvalScheduler:
                 ephemeral=True,
                 ignore_user_config=True,
             )
-            agent_started = time.monotonic()
+            agent_started = _phase_time()
             start_task = asyncio.create_task(
                 self.runtime.start(
                     None,
@@ -484,7 +489,7 @@ class EvalScheduler:
             # Finish process registration before cancellation tries to stop it.
             await asyncio.shield(start_task)
             await self.runtime.wait(run_id)
-            agent_ms = int((time.monotonic() - agent_started) * 1000)
+            agent_ms = int((_phase_time() - agent_started) * 1000)
 
             async with self.session_factory() as db:
                 run = await db.get(models.Run, run_id)
@@ -539,7 +544,7 @@ class EvalScheduler:
                     )
                     return
 
-            scoring_started = time.monotonic()
+            scoring_started = _phase_time()
             changed_paths = await self.worktrees.changed_paths(provisioned)
             if verifier_artifact_id:
                 async with self.session_factory() as db:
@@ -618,7 +623,7 @@ class EvalScheduler:
                 attempt.status = "completed"
                 attempt.outcome = outcome
                 attempt.scoring_duration_ms = int(
-                    (time.monotonic() - scoring_started) * 1000
+                    (_phase_time() - scoring_started) * 1000
                 )
                 attempt.completed_at = datetime.now(UTC)
                 await db.commit()

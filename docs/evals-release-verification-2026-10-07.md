@@ -28,6 +28,6 @@ The hard-crash test manually killed only its captured synthetic agent process gr
 
 Native UI screenshots remained stale relative to accessibility state and subsequently failed with ScreenCaptureKit error `-3811`. Result geometry, configuration layout, resizing, and long-trace scrolling still require reliable visual verification. Accessibility checks are not layout sign-off.
 
-T3 v2 exists only in the disposable QA database. To publish it in the working database, first restart with the updated backend, then run `backend/tools/revise_t3_prompts.py` with that database path and the exact backend PID. The tool verifies the connection and takes a consistent backup before updating. Historical v1 inputs and results must remain intact.
+Subsequent live publication: the main source app was restarted while idle with the updated frontend/backend and its existing database. The revision tool then backed up that database, validated/published all five v2 cases, and froze suite v2. Historical rows were compared against the backup and remain unchanged; zero new agent runs were launched. See [live v2 evidence](evidence/t3code-live-v2-2026-10-07.json). Main-app native controls returned `noWindowsAvailable` and an incomplete accessibility tree, so visual verification remains pending.
 
 Remaining release work includes reliable visual checks, an approved real demo recording, and release version/signing/notarization decisions.

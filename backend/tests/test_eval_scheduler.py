@@ -3,6 +3,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select, text
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from artifacts import ArtifactStore
 from database import Base, models
+from evals import scheduler as scheduler_module
 from evals.scheduler import EvalScheduler, reconcile_interrupted_evals
 from evals.service import EvalService, EvalServiceError
 from evals.verifier_bundles import build_verifier_bundle
@@ -111,8 +113,37 @@ class FakeEvalRuntime:
         return True
 
 
+def test_phase_clock_uses_event_loop_clock(monkeypatch) -> None:
+    loop = SimpleNamespace(time=lambda: 770.0)
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    assert scheduler_module._phase_time() == 770.0
+
+
 @pytest.mark.asyncio
-async def test_scheduler_executes_scores_and_cleans_worktree(tmp_path) -> None:
+@pytest.mark.parametrize("suspend_gap", [False, True])
+async def test_scheduler_executes_scores_and_cleans_worktree(
+    tmp_path, monkeypatch, suspend_gap
+) -> None:
+    if suspend_gap:
+        # A sleep-inclusive deadline clock advances 668 seconds during the
+        # agent phase. Persist that elapsed time, not the awake-only ~50s.
+        readings = iter(
+            [
+                100.0,
+                101.0,
+                102.0,
+                770.0,
+                771.0,
+                772.0,
+                800.0,
+                801.0,
+                802.0,
+                1470.0,
+                1471.0,
+                1472.0,
+            ]
+        )
+        monkeypatch.setattr(scheduler_module, "_phase_time", lambda: next(readings))
     repository = tmp_path / "repository"
     repository.mkdir()
     head = await asyncio.to_thread(initialize_repository, repository)
@@ -247,6 +278,10 @@ async def test_scheduler_executes_scores_and_cleans_worktree(tmp_path) -> None:
     async with session_factory() as db:
         experiment = await db.get(models.EvalExperiment, experiment_id)
         attempt = await db.get(models.EvalAttempt, attempt_id)
+        if suspend_gap:
+            assert attempt.setup_duration_ms == 1000
+            assert attempt.agent_duration_ms == 668000
+            assert attempt.scoring_duration_ms == 1000
         scores = list((await db.execute(select(models.EvalScore))).scalars())
         service = EvalService(
             WorktreeService(worktree_root), artifact_store=artifact_store

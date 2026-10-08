@@ -41,11 +41,48 @@ def validate_plan(preflight: dict, differences: list[dict]) -> None:
         raise RuntimeError("Configurations must differ only in reasoning effort")
 
 
-def run_suite(database: Path, pid: int, model: str) -> dict:
+def select_existing_configs(catalog: list[dict], snapshot_ids: list[int], model: str):
+    selected = []
+    if len(snapshot_ids) != 2 or len(set(snapshot_ids)) != 2:
+        raise RuntimeError("Expected two distinct existing configuration snapshots")
+    for snapshot_id, effort in zip(snapshot_ids, ("medium", "high"), strict=True):
+        config = next((c for c in catalog if c["snapshot"]["id"] == snapshot_id), None)
+        if config is None:
+            raise RuntimeError("Existing configuration snapshot not found")
+        snapshot = config["snapshot"]
+        if (
+            snapshot["model"] != model
+            or snapshot["reasoning_effort"] != effort
+            or snapshot["sandbox_policy"].get("mode") != "workspace-write"
+            or snapshot["sandbox_policy"].get("network") is not False
+        ):
+            raise RuntimeError(
+                "Existing snapshot does not match the approved offline plan"
+            )
+        selected.append(config)
+    return selected
+
+
+def run_suite(
+    database: Path,
+    pid: int,
+    model: str,
+    *,
+    suite_version: int | None = None,
+    existing_snapshot_ids: list[int] | None = None,
+) -> dict:
     url, token = connection_for_process(pid, database)
     rpc = Rpc(url, token)
-    if any(e["name"] == NAME for e in rpc("eval.experiment.list")):
+    name = (
+        NAME
+        if suite_version is None
+        else f"T3 v{suite_version} five-case comparison — medium vs high"
+    )
+    experiments = rpc("eval.experiment.list")
+    if any(e["name"] == name for e in experiments):
         raise RuntimeError("Comparison already exists; inspect it instead of rerunning")
+    if any(e.get("status") in {"ready", "running"} for e in experiments):
+        raise RuntimeError("Another experiment is active; refusing overlapping runs")
     cases = rpc("eval.case.list")
     expected = {
         f"T3 Code: {slug}"
@@ -69,6 +106,9 @@ def run_suite(database: Path, pid: int, model: str) -> dict:
             s
             for s in suites
             if s["latest_version"]["status"] == "frozen"
+            and (
+                suite_version is None or s["latest_version"]["version"] == suite_version
+            )
             and {c["revision_id"] for c in s["latest_version"]["cases"]} == revision_ids
         ),
         None,
@@ -77,8 +117,12 @@ def run_suite(database: Path, pid: int, model: str) -> dict:
         raise RuntimeError(
             "Expected a frozen suite containing exactly the five T3 revisions"
         )
-    configs = []
-    for effort in ("medium", "high"):
+    configs = (
+        select_existing_configs(rpc("eval.config.list"), existing_snapshot_ids, model)
+        if existing_snapshot_ids is not None
+        else []
+    )
+    for effort in () if existing_snapshot_ids is not None else ("medium", "high"):
         configs.append(
             rpc(
                 "eval.config.capture",
@@ -102,7 +146,7 @@ def run_suite(database: Path, pid: int, model: str) -> dict:
         },
     )["differences"]
     params = {
-        "name": NAME,
+        "name": name,
         "suite_version_id": suite["latest_version"]["id"],
         "config_snapshot_ids": snapshot_ids,
         "samples_per_case": 1,
@@ -171,8 +215,16 @@ def main() -> None:
     parser.add_argument("--database", required=True, type=Path)
     parser.add_argument("--backend-pid", required=True, type=int)
     parser.add_argument("--model", required=True)
+    parser.add_argument("--suite-version", type=int)
+    parser.add_argument("--existing-snapshot-ids", type=int, nargs=2)
     args = parser.parse_args()
-    run_suite(args.database.resolve(), args.backend_pid, args.model)
+    run_suite(
+        args.database.resolve(),
+        args.backend_pid,
+        args.model,
+        suite_version=args.suite_version,
+        existing_snapshot_ids=args.existing_snapshot_ids,
+    )
 
 
 if __name__ == "__main__":

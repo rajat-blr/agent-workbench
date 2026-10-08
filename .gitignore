@@ -17,5 +17,7 @@ backend/agent_workbench.db
 backend/agent_workbench.db-shm
 backend/agent_workbench.db-wal
 backend/agent_workbench.db.*.bak
+backend/agent_workbench.db.*.bak-shm
+backend/agent_workbench.db.*.bak-wal
 backend/artifacts/
 backend/eval-worktrees/
