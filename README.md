@@ -1,10 +1,14 @@
 # Agent Workbench
 
-A local-first desktop workspace for coding with Codex and evaluating agent configurations against reproducible tasks. Chat with your codebase, review changes, and inspect evaluation results in one app.
+A local-first desktop app for coding with Codex and measuring how agent configurations perform on real coding tasks. **Evals lab** brings reproducible experiments, side-by-side comparisons, and inspectable evidence into the same workspace where you chat with your codebase and review changes.
 
-[Download v1 for macOS (Apple Silicon)](https://github.com/rajat-blr/agent-workbench/releases/download/v1/Agent.Workbench-0.1.0-arm64.dmg) · [v1 release](https://github.com/rajat-blr/agent-workbench/releases/tag/v1)
+[Download v2 for macOS (Apple Silicon)](https://github.com/rajat-blr/agent-workbench/releases/download/v2/Agent.Workbench-0.1.0-arm64.dmg) · [Release notes](https://github.com/rajat-blr/agent-workbench/releases/tag/v2)
 
-The linked v1 release predates the current source build's Evals lab. Build from source for the features described below. macOS Apple Silicon packaging is verified; other platforms are not release-verified.
+Latest release: **v2 — Agent Workbench with Evals**, published October 8, 2026. Evals is now included in the downloadable app. macOS Apple Silicon packaging is verified; other platforms are not release-verified.
+
+- **Compare agent configurations:** evaluate model, reasoning effort, and instruction changes against the same frozen coding tasks.
+- **Inspect the evidence:** follow pass/fail outcomes through graders, execution traces, source diffs, timing, and available token usage.
+- **Keep coding in one place:** persistent Codex chats, interactive codebase maps, and explicit Git review controls alongside Evals.
 
 ## Install and start
 
@@ -14,20 +18,11 @@ The linked v1 release predates the current source build's Evals lab. Build from 
 
 The DMG bundles the backend: Python, Node.js, and a database service are not required for end users. Codex CLI is **not bundled**. Local builds are unsigned; macOS may warn on first launch. Signing/notarization is not configured in this repository.
 
-## Chat workspace
-
-- Register, rename, and organize local workspaces with persistent conversation sessions.
-- Ask Codex to explain or change a project; later prompts resume the session's recorded Codex thread.
-- Follow live assistant output and a concise work summary, with cancellation controls and retained run history.
-- Generate an interactive codebase map for project-explanation requests.
-- Inspect per-run Git diffs and explicitly accept or revert changes. Runs without a usable Git baseline cannot provide a reproducible change review.
-- Stage, commit, and push with explicit controls. These actions require the repository root on `main`, with no active run; staging uses `git add .` and pushing targets `origin main`. Nothing is committed or pushed automatically.
-
-Only one chat run can be active in a workspace at a time, preventing overlapping change reviews. Chat can also run in non-Git folders, without Git-backed review features.
-
 ## Evals lab
 
-Use the separate **Chat workspace** and **Evals lab** buttons to switch modes. Evals history is independent of chat sessions.
+Turn “does this configuration work better?” into a repeatable coding experiment. Run candidates against identical case revisions, grade their changes, and compare results without losing the underlying evidence.
+
+Use the separate **Chat workspace** and **Evals lab** buttons to switch modes. Evals history is independent of chat sessions. The workflow is: **create and validate cases → freeze a suite → capture configurations → run and compare**.
 
 ### Cases and suites
 
@@ -58,6 +53,17 @@ In **Evals lab → Configurations**, select a workspace to capture global guidan
 Instruction files and CLI versions are **observed, not pinned**. Attempts use the case baseline's project files and the installed executable. Only explicit model/reasoning settings, the preamble, and restricted sandbox/network policy are applied; arbitrary project settings are not forwarded. Custom instruction fallback names and external authentication remain uncontrolled. Capture a new snapshot when inputs change.
 
 Recognizable credential assignments and bearer/API-key patterns are redacted, but this is not a general secret detector. Never put secrets in prompts, preambles, or instruction files. Disposable worktrees and delayed verifiers are not a hardened secrecy boundary.
+
+## Chat workspace
+
+- Register, rename, and organize local workspaces with persistent conversation sessions.
+- Ask Codex to explain or change a project; later prompts resume the session's recorded Codex thread.
+- Follow live assistant output and a concise work summary, with cancellation controls and retained run history.
+- Generate an interactive codebase map for project-explanation requests.
+- Inspect per-run Git diffs and explicitly accept or revert changes. Runs without a usable Git baseline cannot provide a reproducible change review.
+- Stage, commit, and push with explicit controls. These actions require the repository root on `main`, with no active run; staging uses `git add .` and pushing targets `origin main`. Nothing is committed or pushed automatically.
+
+Only one chat run can be active in a workspace at a time, preventing overlapping change reviews. Chat can also run in non-Git folders, without Git-backed review features.
 
 ## Architecture and local data
 
