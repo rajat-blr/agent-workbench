@@ -24,7 +24,7 @@ The actual wire format exposed nullable case revisions and optional fields on un
 
 ## Checks and boundaries
 
-Twelve backend tests check handler/method-map completeness, matching parameter models, deterministic generation, defaults/constraints, nullable and optional output fields, fail-closed generation, and input/output validation behavior. Compile-only frontend tests use `@ts-expect-error` assertions for invalid calls and result usage, including both transports. CI checks generated-file drift and compiles these assertions alongside existing regressions.
+Twelve backend tests check handler/method-map completeness, matching parameter models, deterministic generation, defaults/constraints, nullable and optional output fields, fail-closed generation, and input/output validation behavior. Compile-only frontend tests use `@ts-expect-error` assertions for invalid calls and result usage, including both transports. Run generated-file drift checks and compile these assertions locally alongside existing regressions.
 
 TypeScript cannot enforce numeric ranges, string patterns, filesystem rules, authorization, or semantic scorer configuration; those remain backend checks. Open-ended event payloads and configuration/scorer dictionaries remain `unknown`-valued objects. The frontend does not perform runtime schema validation of incoming frames; its typed boundary relies on the updated backend. Extra legacy fields are not globally rejected. Response validation happens after handler execution and does not roll back completed side effects; contract errors must not trigger automatic mutation retries.
 

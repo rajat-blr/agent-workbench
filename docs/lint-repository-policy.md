@@ -1,10 +1,10 @@
 # Lint and repository policy
 
-The backend's Ruff configuration is now explicit in `backend/pyproject.toml`, rather than relying on default or machine-specific settings. CI runs both `ruff check .` and `ruff format --check .`.
+The backend's Ruff configuration is now explicit in `backend/pyproject.toml`, rather than relying on default or machine-specific settings. Run both `ruff check .` and `ruff format --check .` locally.
 
 Enabled rule families: baseline syntax/undefined names (`E4`, `E7`, `E9`, `F`), imports (`I`), bug patterns (`B`), async code (`ASYNC`), modernization (`UP`), simplification (`SIM`), security heuristics (`S`), broad exception catches (`BLE`), and unused suppressions (`RUF100`). See [Ruff's configuration documentation](https://docs.astral.sh/ruff/configuration/).
 
-Runtime and CI still require Python 3.14. Ruff uses a Python 3.13 **code-style target** to retain and enforce readable parenthesized multi-exception handlers; this does not promise Python 3.13 runtime compatibility. Formatting no longer undoes that syntax. The shared response TypedDict definitions use class syntax without changing generated frontend types.
+Runtime still requires Python 3.14. Ruff uses a Python 3.13 **code-style target** to retain and enforce readable parenthesized multi-exception handlers; this does not promise Python 3.13 runtime compatibility. Formatting no longer undoes that syntax. The shared response TypedDict definitions use class syntax without changing generated frontend types.
 
 ## Fixes and scoped exceptions
 
@@ -23,6 +23,6 @@ PRD ignores now match document names `PRD.*`, `PRD-*`, `PRD_*`, or names ending 
 
 ## Verification
 
-Fourteen new tests check ignore boundaries, metadata/lockfile consistency, required lint families, parenthesized production exception handlers, RPC URL rejection, proxy/redirect restrictions, and static query evidence. All 160 backend tests, frontend contract/regression checks, production build, both linters, backend formatting, generated-contract drift, and offline lockfile verification pass locally. Tests use disposable fixtures, not paid agents or the application database. Hosted CI and a rebuilt installer remain unverified for this batch.
+Fourteen new tests check ignore boundaries, metadata/lockfile consistency, required lint families, parenthesized production exception handlers, RPC URL rejection, proxy/redirect restrictions, and static query evidence. All 160 backend tests, frontend contract/regression checks, production build, both linters, backend formatting, generated-contract drift, and offline lockfile verification pass locally. Tests use disposable fixtures, not paid agents or the application database. A rebuilt installer remains unverified for this batch.
 
 Follow-up scaling work is implemented in [catalog pagination](catalog-pagination.md): bounded ID-cursor queries and complete UI catalog loading beyond 500 sessions, without changing list response shapes. Lazy rendering remains a separate scaling improvement.

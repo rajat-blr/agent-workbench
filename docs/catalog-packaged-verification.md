@@ -15,6 +15,6 @@ The first run exposed unbounded sidebar lists that pushed Sessions out of view. 
 
 Evidence is retained locally in `/var/folders/k_/h_dcfnks7wj905cqj0qcz05c0000gn/T/workbench-packaged-catalog-gmhu3d/` (`report.json`, `catalog.png`, disposable fixture DB/profile). Temporary evidence may be removed by the OS. The smoke prints the directory for each new run and stops its app/backend processes when finished. Remote debugging is enabled only for the disposable test run, not normal startup.
 
-Additional checks pass: 168 backend tests; 41 frontend/Electron regression tests; frontend build/lint/contract checks; backend lint/format/generated-contract drift checks; hidden Electron UI/IPC/CSP/navigation security smoke. Hosted CI and a new installer were not run in this batch.
+Additional checks pass: 168 backend tests; 41 frontend/Electron regression tests; frontend build/lint/contract checks; backend lint/format/generated-contract drift checks; hidden Electron UI/IPC/CSP/navigation security smoke. A new installer was not built in this batch.
 
 This record concerns catalog layout and packaging, not benchmark sensitivity or model performance. Benchmark selection and source-build statistics subsequently changed; see [current methodology](evals-benchmark-methodology.md). Rerun package checks after rebuilding the latest source.

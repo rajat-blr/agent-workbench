@@ -24,7 +24,7 @@ The legacy `workspace.git_push_main` remains for compatibility with main/origin-
 
 Thirteen Git backend tests cover local stage/commit/push, selective staging without sweeping `.env` or build output, literal filenames, rejected directories/traversal/unknown paths, duplicate/empty selections, stale index/branch reviews, rename/deletion handling, feature-branch destination pushes, invalid remotes/refnames, detached HEAD, nested roots, and active runs.
 
-Three frontend selection tests cover explicit-only payloads, stale/invalid selections, and advisory warnings. They run in CI via `npm run test:git`. Frontend build/lint and the existing Electron security smoke exercise the rebuilt app, but do not constitute interactive verification of every Git dialog. Backend mutation tests use disposable repositories and local bare remotes only.
+Three frontend selection tests cover explicit-only payloads, stale/invalid selections, and advisory warnings. Run them locally via `npm run test:git`. Frontend build/lint and the existing Electron security smoke exercise the rebuilt app, but do not constitute interactive verification of every Git dialog. Backend mutation tests use disposable repositories and local bare remotes only.
 
 Local verification on 2026-10-09: all 124 backend tests passed, plus three Git selection tests, two demo tests, ten Electron unit tests, the hidden Electron smoke, frontend production build/type checks, both linters, workflow YAML parsing, and Git whitespace checks.
 

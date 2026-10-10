@@ -1,14 +1,4 @@
-# CI and Electron hardening
-
-## Continuous integration
-
-`.github/workflows/ci.yml` runs on push, pull request, and manual dispatch, with read-only repository permissions, pinned action commits, lockfile-based installs, and cancellation of superseded runs.
-
-- Backend: `uv` 0.12.9, Python 3.14, `uv sync --locked --group dev`, explicit Ruff lint/format checks, generated RPC contract drift check, and pytest.
-- Frontend: Node 24, `npm ci`, `tsc -b`, Oxlint, synthetic-demo/Git/chat/RPC tests, compile-only contract assertions, Electron unit tests, and production build.
-- Browser-level Electron smoke: hidden window under Xvfb on Linux; disposable profile and loopback fixture only. No Codex executable, paid attempts, or real application database.
-
-GitHub-hosted execution is pending the next push/PR; local results are not a claim that the hosted workflow has run. This workflow does not package, sign, publish, or deploy releases.
+# Electron hardening
 
 ## Desktop safeguards
 
@@ -33,6 +23,6 @@ Unit tests cover exact-origin CSP, development exceptions, header replacement, U
 
 The hidden Electron smoke test renders the production UI, checks trusted preload IPC and actual loopback HTTP/WebSocket access, rejects remote/other-port connections and inline script injection, verifies external-link routing, and confirms the app document did not navigate. This exercises production renderer policy, not the signed installer or a real Codex session. Run it after `npm run build` with `npm run test:electron:smoke`.
 
-Implementation follows [Electron's security guidance](https://www.electronjs.org/docs/latest/tutorial/security) and [uv's GitHub Actions guidance](https://docs.astral.sh/uv/guides/integration/github/).
+Implementation follows [Electron's security guidance](https://www.electronjs.org/docs/latest/tutorial/security).
 
-Local verification on 2026-10-09: 113 backend tests, ten Electron unit tests, two demo tests, frontend type-check/production build, both linters, and the hidden Electron smoke passed. Workflow YAML parsed successfully and Git whitespace checks passed. Hosted Linux CI and rebuilt/signed release artifacts have not been exercised.
+Local verification on 2026-10-09: 113 backend tests, ten Electron unit tests, two demo tests, frontend type-check/production build, both linters, and the hidden Electron smoke passed. Git whitespace checks passed. Rebuilt/signed release artifacts have not been exercised.

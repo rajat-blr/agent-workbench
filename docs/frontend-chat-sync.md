@@ -13,7 +13,7 @@ The chat's messages, activity events, session generation, and sequence cursor no
 
 ## Verification
 
-Run `npm --prefix frontend run test:chat` with Node 24. Eighteen deterministic tests exercise selection races, live/history merging, duplicate handling, late acknowledgements, pagination, cleanup, status mapping, WebSocket replacement, reconnect scheduling, timeouts, malformed frames, and send failures. CI runs these alongside demo, Git, and Electron tests.
+Run `npm --prefix frontend run test:chat` with Node 24. Eighteen deterministic tests exercise selection races, live/history merging, duplicate handling, late acknowledgements, pagination, cleanup, status mapping, WebSocket replacement, reconnect scheduling, timeouts, malformed frames, and send failures. Run these locally alongside demo, Git, and Electron tests.
 
 These are store and transport tests with deferred promises and fake sockets/timers, not rendered chat interaction tests. The hidden production Electron smoke separately checks renderer startup and security policy. No real agent calls or application database mutations are needed.
 

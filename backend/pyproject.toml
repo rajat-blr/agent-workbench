@@ -30,7 +30,7 @@ pythonpath = ["."]
 
 [tool.ruff]
 # Code-style target keeps parenthesized multi-exception handlers readable.
-# Runtime and CI still require Python 3.14 (see requires-python above).
+# Runtime still requires Python 3.14 (see requires-python above).
 target-version = "py313"
 
 [tool.ruff.lint]
