@@ -5,6 +5,8 @@ frontend/out/
 .eval-sources/
 .eval-validation/
 .eval-cases/
+.eval-candidates/
+.eval-packages/
 backend/.venv/
 backend/__pycache__/
 backend/build/
@@ -12,8 +14,32 @@ backend/dist/
 *.pyc
 .DS_Store
 .env
-# Local product requirements documents (any capitalization or file format).
-*[Pp][Rr][Dd]*
+# Local PRD documents: PRD.*, PRD-*, PRD_*, or a -PRD/_PRD/.PRD suffix.
+# Match document extensions only, not source names that merely contain "prd".
+[Pp][Rr][Dd].[Mm][Dd]
+[Pp][Rr][Dd]-*.[Mm][Dd]
+[Pp][Rr][Dd]_*.[Mm][Dd]
+*-[Pp][Rr][Dd].[Mm][Dd]
+*_[Pp][Rr][Dd].[Mm][Dd]
+*.[Pp][Rr][Dd].[Mm][Dd]
+[Pp][Rr][Dd].[Tt][Xx][Tt]
+[Pp][Rr][Dd]-*.[Tt][Xx][Tt]
+[Pp][Rr][Dd]_*.[Tt][Xx][Tt]
+*-[Pp][Rr][Dd].[Tt][Xx][Tt]
+*_[Pp][Rr][Dd].[Tt][Xx][Tt]
+*.[Pp][Rr][Dd].[Tt][Xx][Tt]
+[Pp][Rr][Dd].[Pp][Dd][Ff]
+[Pp][Rr][Dd]-*.[Pp][Dd][Ff]
+[Pp][Rr][Dd]_*.[Pp][Dd][Ff]
+*-[Pp][Rr][Dd].[Pp][Dd][Ff]
+*_[Pp][Rr][Dd].[Pp][Dd][Ff]
+*.[Pp][Rr][Dd].[Pp][Dd][Ff]
+[Pp][Rr][Dd].[Dd][Oo][Cc][Xx]
+[Pp][Rr][Dd]-*.[Dd][Oo][Cc][Xx]
+[Pp][Rr][Dd]_*.[Dd][Oo][Cc][Xx]
+*-[Pp][Rr][Dd].[Dd][Oo][Cc][Xx]
+*_[Pp][Rr][Dd].[Dd][Oo][Cc][Xx]
+*.[Pp][Rr][Dd].[Dd][Oo][Cc][Xx]
 backend/validation.db
 backend/agent_workbench.db
 backend/agent_workbench.db-shm
@@ -23,3 +49,5 @@ backend/agent_workbench.db.*.bak-shm
 backend/agent_workbench.db.*.bak-wal
 backend/artifacts/
 backend/eval-worktrees/
+
+backend/eval-repositories/

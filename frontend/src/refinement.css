@@ -1,5 +1,4 @@
-/* The desktop UI uses T3 Code's current system-sans / system-mono font stacks,
-   while keeping Agent Workbench's own palette and layout. */
+/* System fonts complement Agent Workbench's palette and layout. */
 :root {
   --bg: #111314;
   --panel: #151718;

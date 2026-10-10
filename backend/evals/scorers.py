@@ -6,6 +6,7 @@ import json
 import os
 import re
 import signal
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -103,7 +104,7 @@ async def score_command(
     try:
         process = await asyncio.create_subprocess_exec(
             *spec.argv,
-            cwd=str(Path(worktree).resolve()),
+            cwd=str(await asyncio.to_thread(Path(worktree).resolve)),
             env=environment,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -140,10 +141,8 @@ async def score_command(
         )
     except (TimeoutError, OverflowError, asyncio.CancelledError) as exc:
         if os.name != "nt":
-            try:
+            with suppress(ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
         elif process.returncode is None:
             process.kill()
         for task in tasks:

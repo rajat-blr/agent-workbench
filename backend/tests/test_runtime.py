@@ -1,5 +1,6 @@
 import asyncio
 import gzip
+import os
 import sys
 from datetime import UTC, datetime
 
@@ -9,6 +10,57 @@ from agent_runtime import AgentRuntimeManager, CodexAgentAdapter, ExecutionOptio
 from artifacts import ArtifactStore
 from codebase_map import MAP_CLOSE, MAP_OPEN, extract_codebase_map
 from event_broker import AgentEvent, EventBroker
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+async def test_shutdown_force_reaps_a_sigterm_resistant_agent_group(tmp_path) -> None:
+    child_script = (
+        "from pathlib import Path\nimport time\n"
+        "while True:\n Path('heartbeat').write_text(str(time.time()))\n time.sleep(0.02)\n"
+    )
+    script = (
+        "import signal, subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        f"subprocess.Popen([sys.executable, '-c', {child_script!r}])\n"
+        "Path('ready').write_text('ready')\n"
+        "time.sleep(30)\n"
+    )
+
+    class GroupAdapter:
+        async def start(self, workspace_path, prompt, thread_id=None, options=None):
+            return await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-u",
+                "-c",
+                script,
+                cwd=workspace_path,
+                start_new_session=True,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+    persisted: list[AgentEvent] = []
+    runtime = AgentRuntimeManager(
+        EventBroker(), GroupAdapter(), event_persister(persisted), timeout_seconds=60
+    )
+    await runtime.start(1, 501, str(tmp_path), "fixture")
+    process = runtime._agents[501].process
+    try:
+        async with asyncio.timeout(3):
+            while not (tmp_path / "heartbeat").exists():
+                await asyncio.sleep(0.02)
+        await asyncio.wait_for(runtime.shutdown(), timeout=8)
+        assert process.returncode is not None
+        heartbeat = (tmp_path / "heartbeat").read_text()
+        await asyncio.sleep(0.1)
+        assert (tmp_path / "heartbeat").read_text() == heartbeat
+        assert persisted[-1].type == "session.cancelled"
+        assert not runtime._agents
+    finally:
+        runtime._terminate_process(process, force=True)
+        await process.wait()
 
 
 class ScriptAdapter:

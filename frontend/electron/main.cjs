@@ -1,9 +1,19 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, shell, protocol, session } = require('electron')
 const { spawn } = require('node:child_process')
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const net = require('node:net')
 const path = require('node:path')
+const {
+  APP_ORIGIN, DEV_ORIGIN, loopbackBackendOrigin, contentSecurityPolicy,
+  externalUrl, isAppDocument, installNavigationGuards, cspHeaders, appResponse,
+} = require('./security.cjs')
+const { observeBackend, stopBackend } = require('./backend-lifecycle.cjs')
+const { workspaceIsRegistered } = require('./catalog.cjs')
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: 'workbench', privileges: { standard: true, secure: true, supportFetchAPI: true },
+}])
 
 // Allow release checks to use a disposable profile without touching real chats.
 const profileDirectory = process.env.AGENT_WORKBENCH_USER_DATA_DIR
@@ -18,6 +28,10 @@ const startsBackend = process.env.START_BACKEND !== 'false'
 const backendAuthToken = process.env.BACKEND_AUTH_TOKEN || (startsBackend ? crypto.randomBytes(32).toString('hex') : '')
 let backendUrl = process.env.BACKEND_URL || 'http://127.0.0.1:8000'
 let backendProcess
+let backendReady = false
+let quitting = false
+let quitComplete = false
+let shutdownStarted = false
 
 function executableExists(candidate) {
   if (!candidate) return false
@@ -71,7 +85,7 @@ async function waitForBackend(timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs
   let lastError
   while (Date.now() < deadline) {
-    if (backendProcess && backendProcess.exitCode !== null) {
+    if (backendProcess && (backendProcess.exitCode !== null || backendProcess.signalCode !== null)) {
       throw new Error(`Backend exited with code ${backendProcess.exitCode}`)
     }
     try {
@@ -86,6 +100,7 @@ async function waitForBackend(timeoutMs = 15_000) {
 }
 
 async function startBackend() {
+  backendUrl = loopbackBackendOrigin(backendUrl)
   if (!startsBackend) {
     if (!backendAuthToken) throw new Error('BACKEND_AUTH_TOKEN is required when START_BACKEND=false')
     await waitForBackend()
@@ -117,9 +132,29 @@ async function startBackend() {
     cwd: backendRoot,
     env: backendEnvironment,
     stdio: 'inherit',
+    detached: process.platform !== 'win32',
   })
   backendProcess.on('error', (error) => console.error('Backend process failed:', error.message))
+  observeBackend(backendProcess, {
+    isQuitting: () => quitting,
+    isReady: () => backendReady,
+    onFailure: (message) => dialog.showErrorBox('Agent Workbench backend stopped', message),
+  })
   await waitForBackend()
+}
+
+function installSessionSecurity() {
+  const policy = contentSecurityPolicy(backendUrl, isDev)
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({ responseHeaders: cspHeaders(details.responseHeaders, policy) })
+  })
+  session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
+  session.defaultSession.setPermissionCheckHandler(() => false)
+  if (!isDev) {
+    protocol.handle('workbench', (request) => appResponse(
+      request, path.join(__dirname, '../dist'), policy,
+    ))
+  }
 }
 
 function createWindow() {
@@ -139,30 +174,44 @@ function createWindow() {
     },
   })
 
-  if (isDev) window.loadURL('http://127.0.0.1:5173')
-  else window.loadFile(path.join(__dirname, '../dist/index.html'))
+  installNavigationGuards(window.webContents, (value) => shell.openExternal(externalUrl(value)))
+  window.loadURL(isDev ? DEV_ORIGIN : `${APP_ORIGIN}/index.html`)
 }
 
-ipcMain.handle('desktop:backend-connection', () => ({
+function trustedHandle(channel, handler) {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame
+      || !isAppDocument(event.senderFrame.url, isDev)) {
+      throw new Error('Untrusted desktop IPC sender')
+    }
+    return handler(event, ...args)
+  })
+}
+
+trustedHandle('desktop:backend-connection', () => ({
   url: backendUrl,
   token: backendAuthToken,
 }))
-ipcMain.handle('desktop:select-directory', async () => {
+trustedHandle('desktop:select-directory', async () => {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
   return result.canceled ? null : result.filePaths[0]
 })
-ipcMain.handle('desktop:reveal-workspace-file', async (_event, workspacePath, filePath) => {
+trustedHandle('desktop:reveal-workspace-file', async (_event, workspacePath, filePath) => {
   if (typeof workspacePath !== 'string' || typeof filePath !== 'string' || path.isAbsolute(filePath)) {
     throw new Error('Invalid workspace file')
   }
-  const response = await fetch(`${backendUrl}/rpc`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${backendAuthToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 'reveal-file', method: 'workspace.list' }),
-  })
-  if (!response.ok) throw new Error('Could not verify workspace')
-  const result = await response.json()
-  if (!Array.isArray(result.result) || !result.result.some((workspace) => workspace.path === workspacePath)) {
+  const registered = await workspaceIsRegistered(async (params) => {
+    const response = await fetch(`${backendUrl}/rpc`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${backendAuthToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 'reveal-file', method: 'workspace.list', params }),
+    })
+    if (!response.ok) throw new Error('Could not verify workspace')
+    const result = await response.json()
+    if (result.error) throw new Error('Could not verify workspace')
+    return result.result
+  }, workspacePath)
+  if (!registered) {
     throw new Error('Workspace is not registered')
   }
   const root = fs.realpathSync(workspacePath)
@@ -172,22 +221,24 @@ ipcMain.handle('desktop:reveal-workspace-file', async (_event, workspacePath, fi
   }
   shell.showItemInFolder(target)
 })
-ipcMain.handle('desktop:open-external', async (_event, value) => {
-  if (typeof value !== 'string') throw new Error('Invalid external URL')
-  const url = new URL(value)
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('Unsupported external URL')
-  await shell.openExternal(url.href)
+trustedHandle('desktop:open-external', async (_event, value) => {
+  await shell.openExternal(externalUrl(value))
 })
 
 app.whenReady().then(async () => {
   try {
     await startBackend()
+    backendReady = true
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     console.error('Backend startup failed:', message)
     dialog.showErrorBox('Agent Workbench backend failed to start', message)
+    // Never render a document with an invalid/non-loopback backend policy.
+    app.quit()
+    return
   }
 
+  installSessionSecurity()
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()
   })
@@ -197,6 +248,16 @@ app.whenReady().then(async () => {
   createWindow()
 })
 
-app.on('before-quit', () => {
-  if (backendProcess && backendProcess.exitCode === null) backendProcess.kill('SIGTERM')
+app.on('before-quit', (event) => {
+  quitting = true
+  if (quitComplete || !backendProcess) return
+  event.preventDefault()
+  if (shutdownStarted) return
+  shutdownStarted = true
+  stopBackend(backendProcess).catch((error) => {
+    console.error('Backend shutdown failed:', error.message)
+  }).finally(() => {
+    quitComplete = true
+    app.quit()
+  })
 })

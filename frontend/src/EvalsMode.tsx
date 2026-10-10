@@ -4,25 +4,33 @@ import { rpcClient } from './runtime'
 import type { EvalAttemptDetail, EvalAttemptEvent, EvalCase, EvalConfig, EvalExperiment, EvalExperimentEvent, EvalPreflight, EvalScorerOutput, EvalStep, EvalSuite, RunDiff, Workspace } from './runtime'
 import { RunDiffView } from './RunDiffView'
 import { EvalResultsView } from './EvalResultsView'
+import { EvalTraceView } from './EvalTraceView'
 import { EvalConfigDiff } from './EvalConfigDiff'
+import { EvalGuide } from './EvalGuide'
+import { EvalRepositoryImport } from './EvalRepositoryImport'
 
-type Section = 'experiments' | 'cases' | 'suites' | 'configurations'
+type Section = 'guided' | 'experiments' | 'cases' | 'suites' | 'configurations'
 
 type Props = {
   live: boolean
   demo: boolean
   workspaces: Workspace[]
+  onWorkspaceAdded: (workspace: Workspace) => void
 }
 
 const navigation: { id: Section; label: string; icon: typeof Beaker }[] = [
-  { id: 'experiments', label: 'Experiments', icon: Beaker },
-  { id: 'cases', label: 'Cases', icon: FlaskConical },
+  { id: 'guided', label: 'New evaluation', icon: Plus },
+  { id: 'experiments', label: 'Evaluations', icon: Beaker },
+  { id: 'cases', label: 'Tasks', icon: FlaskConical },
   { id: 'suites', label: 'Suites', icon: Layers3 },
   { id: 'configurations', label: 'Configurations', icon: Settings2 },
 ]
 
-export function EvalsMode({ live, demo, workspaces }: Props) {
+export function EvalsMode({ live, demo, workspaces, onWorkspaceAdded }: Props) {
   const [section, setSection] = useState<Section>('experiments')
+  const [guideVersion, setGuideVersion] = useState(0)
+  const [showRepositoryImport, setShowRepositoryImport] = useState(false)
+  const [importedWorkspace, setImportedWorkspace] = useState<Workspace | null>(null)
   const [cases, setCases] = useState<EvalCase[]>([])
   const [showCreate, setShowCreate] = useState(false)
   const [title, setTitle] = useState('')
@@ -74,12 +82,12 @@ export function EvalsMode({ live, demo, workspaces }: Props) {
       if (cancelled || refreshing) return
       refreshing = true
       void Promise.all([
-      rpcClient.request<EvalCase[]>('eval.case.list'),
-      rpcClient.request<EvalSuite[]>('eval.suite.list'),
-      rpcClient.request<EvalConfig[]>('eval.config.list'),
-      rpcClient.request<EvalExperiment[]>('eval.experiment.list'),
+      rpcClient.request('eval.case.list'),
+      rpcClient.request('eval.suite.list'),
+      rpcClient.request('eval.config.list'),
+      rpcClient.request('eval.experiment.list'),
     ]).then(([loadedCases, loadedSuites, loadedConfigs, loadedExperiments]) => {
-      if (!cancelled) { setCases(loadedCases); setSuites(loadedSuites); setConfigs(loadedConfigs); setExperiments(loadedExperiments); setError(null) }
+      if (!cancelled) { setCases(loadedCases); setSuites(loadedSuites); setConfigs(loadedConfigs); setExperiments(loadedExperiments); if (demo) setSelectedExperiment(loadedExperiments[0] ?? null); setError(null) }
     }).catch((requestError) => {
       if (!cancelled) setError(requestError instanceof Error ? requestError.message : 'Could not load eval cases.')
     }).finally(() => {
@@ -98,32 +106,34 @@ export function EvalsMode({ live, demo, workspaces }: Props) {
   }, [live, demo])
 
   useEffect(() => {
-    if (!live || demo || !runningExperimentIds.length) return
+    const subscribedIds = runningExperimentKey ? runningExperimentKey.split(',').map(Number) : []
+    if (!live || demo || !subscribedIds.length) return
+    let cancelled = false
     const refreshExperiment = (event: EvalExperimentEvent) => {
-      void rpcClient.request<EvalExperiment>('eval.experiment.get', { experiment_id: event.experiment_id }).then((updated) => {
+      void rpcClient.request('eval.experiment.get', { experiment_id: event.experiment_id }).then((updated) => {
+        if (cancelled) return
         setExperiments((current) => current.map((item) => item.id === updated.id ? updated : item))
         setSelectedExperiment((current) => current?.id === updated.id ? updated : current)
       }).catch(() => undefined)
     }
     rpcClient.onExperimentEvent(refreshExperiment)
-    for (const experimentId of runningExperimentIds) {
+    for (const experimentId of subscribedIds) {
       void rpcClient.request('eval.experiment.subscribe', { experiment_id: experimentId }).catch(() => undefined)
     }
     return () => {
+      cancelled = true
       rpcClient.onExperimentEvent(null)
-      for (const experimentId of runningExperimentIds) {
+      for (const experimentId of subscribedIds) {
         void rpcClient.request('eval.experiment.unsubscribe', { experiment_id: experimentId }).catch(() => undefined)
       }
     }
-  // The joined key changes only when the subscription set changes.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live, demo, runningExperimentKey])
 
   const createCase = async () => {
     if (!title.trim() || !prompt.trim() || !selectedWorkspaceId) return
     setLoading(true)
     try {
-      const created = await rpcClient.request<EvalCase>('eval.case.create', {
+      const created = await rpcClient.request('eval.case.create', {
         title: title.trim(),
         prompt: prompt.trim(),
         workspace_id: selectedWorkspaceId,
@@ -137,6 +147,7 @@ export function EvalsMode({ live, demo, workspaces }: Props) {
 
   const replaceCase = (updated: EvalCase) => setCases((current) => current.map((item) => item.id === updated.id ? updated : item))
   const editCase = (evalCase: EvalCase) => {
+    if (!evalCase.latest_revision) return
     setEditingCaseId(evalCase.id); setBaseSha(evalCase.latest_revision.base_sha ?? '')
     setDraftPrompt(evalCase.latest_revision.prompt)
     setHeldOutPath(''); setHeldOutContent(''); setClearHeldOut(false)
@@ -146,6 +157,7 @@ export function EvalsMode({ live, demo, workspaces }: Props) {
     setVerifierCommand(Array.isArray(command?.argv) ? command.argv.join(' ') : Array.isArray(candidates) && typeof candidates[0] === 'string' ? candidates[0] : '')
   }
   const saveDraft = async (evalCase: EvalCase) => {
+    if (!evalCase.latest_revision) return
     const argv = verifierCommand.trim().split(/\s+/).filter(Boolean); setLoading(true)
     try {
       const verifierUpdate = clearHeldOut ? { verifier_files: [] } : heldOutPath.trim() ? { verifier_files: [{ path: heldOutPath.trim(), content: heldOutContent }] } : {}
@@ -156,22 +168,24 @@ export function EvalsMode({ live, demo, workspaces }: Props) {
       const scorerUpdate = verifierCommand.trim() === original ? {} : { scorer_spec: commandIndex < 0
         ? [...existing, ...(argv.length ? [{ type: 'command', key: 'verifier', argv }] : [])]
         : existing.flatMap((scorer, index) => index !== commandIndex ? [scorer] : argv.length ? [{ ...scorer, argv }] : []) }
-      replaceCase(await rpcClient.request<EvalCase>('eval.case.update_draft', { case_id: evalCase.id, revision_id: evalCase.latest_revision.id, prompt: draftPrompt.trim(), base_sha: baseSha.trim() || null, ...scorerUpdate, path_policy: { ...evalCase.latest_revision.path_policy, base_expectation: baseExpectation }, ...verifierUpdate }))
+      replaceCase(await rpcClient.request('eval.case.update_draft', { case_id: evalCase.id, revision_id: evalCase.latest_revision.id, prompt: draftPrompt.trim(), base_sha: baseSha.trim() || null, ...scorerUpdate, path_policy: { ...evalCase.latest_revision.path_policy, base_expectation: baseExpectation }, ...verifierUpdate }))
       setHeldOutPath(''); setHeldOutContent(''); setClearHeldOut(false); setError(null)
     }
     catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not save the draft.') }
     finally { setLoading(false) }
   }
   const caseAction = async (evalCase: EvalCase, action: 'validate' | 'publish') => {
+    if (!evalCase.latest_revision) return
     setLoading(true)
-    try { replaceCase(await rpcClient.request<EvalCase>(`eval.case.${action}`, { case_id: evalCase.id, revision_id: evalCase.latest_revision.id })); setError(null) }
+    try { replaceCase(await rpcClient.request(`eval.case.${action}`, { case_id: evalCase.id, revision_id: evalCase.latest_revision.id })); setError(null) }
     catch (requestError) { setError(requestError instanceof Error ? requestError.message : `Could not ${action} the case.`) }
     finally { setLoading(false) }
   }
   const reviseCase = async (evalCase: EvalCase) => {
+    if (!evalCase.latest_revision) return
     setLoading(true)
     try {
-      const updated = await rpcClient.request<EvalCase>('eval.case.revise', { case_id: evalCase.id, revision_id: evalCase.latest_revision.id })
+      const updated = await rpcClient.request('eval.case.revise', { case_id: evalCase.id, revision_id: evalCase.latest_revision.id })
       replaceCase(updated); editCase(updated); setError(null)
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not create a draft revision.') }
     finally { setLoading(false) }
@@ -180,42 +194,41 @@ export function EvalsMode({ live, demo, workspaces }: Props) {
     if (!newSuiteName.trim()) return
     setLoading(true)
     try {
-      let suite = await rpcClient.request<EvalSuite>('eval.suite.create', { name: newSuiteName.trim() })
-      const revisionIds = cases.filter((item) => item.latest_revision.status === 'published').map((item) => item.latest_revision.id)
-      if (revisionIds.length) suite = await rpcClient.request<EvalSuite>('eval.suite.update_draft', { suite_id: suite.id, version_id: suite.latest_version.id, case_revision_ids: revisionIds })
+      let suite = await rpcClient.request('eval.suite.create', { name: newSuiteName.trim() })
+      const revisionIds = cases.flatMap((item) => item.latest_revision?.status === 'published' ? [item.latest_revision.id] : [])
+      if (revisionIds.length) suite = await rpcClient.request('eval.suite.update_draft', { suite_id: suite.id, version_id: suite.latest_version.id, case_revision_ids: revisionIds })
       setSuites((current) => [suite, ...current]); setNewSuiteName(''); setError(null)
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not create the suite.') }
     finally { setLoading(false) }
   }
   const freezeSuite = async (suite: EvalSuite) => {
     setLoading(true)
-    try { const frozen = await rpcClient.request<EvalSuite>('eval.suite.freeze', { suite_id: suite.id, version_id: suite.latest_version.id }); setSuites((current) => current.map((item) => item.id === frozen.id ? frozen : item)); setError(null) }
+    try { const frozen = await rpcClient.request('eval.suite.freeze', { suite_id: suite.id, version_id: suite.latest_version.id }); setSuites((current) => current.map((item) => item.id === frozen.id ? frozen : item)); setError(null) }
     catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not freeze the suite.') }
     finally { setLoading(false) }
   }
   const captureConfig = async () => {
     if (!newConfigName.trim()) return
     setLoading(true)
-    try { const config = await rpcClient.request<EvalConfig>('eval.config.capture', { name: newConfigName.trim(), workspace_id: configCaptureWorkspace || undefined, model: configModel.trim() || null, reasoning_effort: reasoningEffort, instruction_preamble: configPreamble, sandbox_policy: { mode: configSandbox, network: false } }); setConfigs((current) => [config, ...current]); setNewConfigName(''); setConfigModel(''); setConfigPreamble(''); setError(null) }
+    try { const config = await rpcClient.request('eval.config.capture', { name: newConfigName.trim(), workspace_id: configCaptureWorkspace || undefined, model: configModel.trim() || null, reasoning_effort: reasoningEffort, instruction_preamble: configPreamble, sandbox_policy: { mode: configSandbox, network: false } }); setConfigs((current) => [config, ...current]); setNewConfigName(''); setConfigModel(''); setConfigPreamble(''); setError(null) }
     catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not capture the configuration.') }
     finally { setLoading(false) }
   }
   const experimentPlan = () => {
-    const frozenSuites = suites.filter((suite) => suite.latest_version.status === 'frozen')
-    const selectedSuite = suiteVersionId || frozenSuites[0]?.latest_version.id || 0
-    const selectedA = configAId || configs[0]?.snapshot.id || 0
-    const selectedB = configBId || configs[1]?.snapshot.id || 0
+    const selectedSuite = suiteVersionId
+    const selectedA = configAId
+    const selectedB = configBId
     return { name: experimentName.trim(), suite_version_id: selectedSuite, config_snapshot_ids: [selectedA, selectedB].filter((id, index, values) => id && values.indexOf(id) === index), samples_per_case: samples, concurrency: 1, timeout_seconds: 1800 }
   }
   const reviewExperiment = async () => {
     setLoading(true)
-    try { setPreflight(await rpcClient.request<EvalPreflight>('eval.experiment.preflight', experimentPlan())); setError(null) }
+    try { setPreflight(await rpcClient.request('eval.experiment.preflight', experimentPlan())); setError(null) }
     catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not run experiment preflight.') }
     finally { setLoading(false) }
   }
   const createExperiment = async () => {
     setLoading(true)
-    try { const created = await rpcClient.request<EvalExperiment>('eval.experiment.create', experimentPlan()); setExperiments((current) => [created, ...current]); setPreflight(null); setExperimentName(''); setError(null) }
+    try { const created = await rpcClient.request('eval.experiment.create', experimentPlan()); setExperiments((current) => [created, ...current]); setPreflight(null); setExperimentName(''); setError(null) }
     catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not create the experiment.') }
     finally { setLoading(false) }
   }
@@ -223,14 +236,14 @@ export function EvalsMode({ live, demo, workspaces }: Props) {
     setLoading(true)
     try {
       await rpcClient.request(`eval.experiment.${action}`, { experiment_id: experiment.id })
-      setExperiments(await rpcClient.request<EvalExperiment[]>('eval.experiment.list'))
+      setExperiments(await rpcClient.request('eval.experiment.list'))
       setError(null)
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : `Could not ${action} the experiment.`) }
     finally { setLoading(false) }
   }
   const openExperiment = async (experiment: EvalExperiment) => {
     setLoading(true)
-    try { setSelectedExperiment(await rpcClient.request<EvalExperiment>('eval.experiment.get', { experiment_id: experiment.id })); setError(null) }
+    try { setSelectedExperiment(await rpcClient.request('eval.experiment.get', { experiment_id: experiment.id })); setError(null) }
     catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not load experiment results.') }
     finally { setLoading(false) }
   }
@@ -238,7 +251,7 @@ export function EvalsMode({ live, demo, workspaces }: Props) {
     setLoading(true)
     setScorerOutput(null)
     setScorerOutputError(null)
-    try { const [detail, steps, events] = await Promise.all([rpcClient.request<EvalAttemptDetail>('eval.attempt.get', { attempt_id: attemptId }), rpcClient.request<EvalStep[]>('eval.attempt.steps', { attempt_id: attemptId }), rpcClient.request<EvalAttemptEvent[]>('eval.attempt.events', { attempt_id: attemptId })]); setSelectedAttempt(detail); setAttemptSteps(steps); setAttemptEvents(events); setError(null) }
+    try { const [detail, steps, events] = await Promise.all([rpcClient.request('eval.attempt.get', { attempt_id: attemptId }), rpcClient.request('eval.attempt.steps', { attempt_id: attemptId }), rpcClient.request('eval.attempt.events', { attempt_id: attemptId })]); setSelectedAttempt(detail); setAttemptSteps(steps); setAttemptEvents(events); setError(null) }
     catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not load attempt evidence.') }
     finally { setLoading(false) }
   }
@@ -247,7 +260,7 @@ export function EvalsMode({ live, demo, workspaces }: Props) {
     try {
       await rpcClient.request('eval.attempt.retry', { attempt_id: attempt.id })
       setSelectedAttempt(null)
-      setExperiments(await rpcClient.request<EvalExperiment[]>('eval.experiment.list'))
+      setExperiments(await rpcClient.request('eval.experiment.list'))
       setError(null)
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not retry the attempt.') }
     finally { setLoading(false) }
@@ -256,7 +269,7 @@ export function EvalsMode({ live, demo, workspaces }: Props) {
     setScorerOutputLoading(true)
     setScorerOutputError(null)
     try {
-      setScorerOutput(await rpcClient.request<EvalScorerOutput>('eval.attempt.artifact', { attempt_id: attemptId, artifact_id: artifactId }))
+      setScorerOutput(await rpcClient.request('eval.attempt.artifact', { attempt_id: attemptId, artifact_id: artifactId }))
     } catch (requestError) { setScorerOutputError({ artifactId, message: requestError instanceof Error ? requestError.message : 'Could not read scorer output.' }) }
     finally { setScorerOutputLoading(false) }
   }
@@ -264,7 +277,7 @@ export function EvalsMode({ live, demo, workspaces }: Props) {
     if (!scorerOutput || !scorerOutput.has_more || scorerOutputLoading) return
     setScorerOutputLoading(true)
     try {
-      const next = await rpcClient.request<EvalScorerOutput>('eval.attempt.artifact', { attempt_id: scorerOutput.attempt_id, artifact_id: scorerOutput.artifact_id, offset: scorerOutput.next_offset })
+      const next = await rpcClient.request('eval.attempt.artifact', { attempt_id: scorerOutput.attempt_id, artifact_id: scorerOutput.artifact_id, offset: scorerOutput.next_offset })
       setScorerOutput((current) => current?.artifact_id === next.artifact_id ? { ...next, stdout: current.stdout + next.stdout, stderr: current.stderr + next.stderr } : current)
     } catch (requestError) { setScorerOutputError({ artifactId: scorerOutput.artifact_id, message: requestError instanceof Error ? requestError.message : 'Could not load more output.' }) }
     finally { setScorerOutputLoading(false) }
@@ -274,24 +287,40 @@ export function EvalsMode({ live, demo, workspaces }: Props) {
     <aside className="evals-sidebar">
       <div className="evals-sidebar-heading"><span className="eyebrow">Evaluation</span><strong>Measure Codex</strong></div>
       <nav aria-label="Evals navigation">
-        {navigation.map(({ id, label, icon: Icon }) => <button key={id} className={section === id ? 'selected' : ''} onClick={() => setSection(id)}><Icon size={15} /><span>{label}</span></button>)}
+        {navigation.filter((item) => !demo || item.id !== 'guided').map(({ id, label, icon: Icon }) => <button key={id} className={section === id ? 'selected' : ''} onClick={() => setSection(id)}><Icon size={15} /><span>{label}</span></button>)}
       </nav>
       <p>Runs stay local and execute in disposable Git worktrees.</p>
     </aside>
 
     <section className="evals-main">
-      {demo && <p className="evals-demo-notice">Synthetic Evals demo · read-only examples, not measured Codex results. Open the experiment to explore comparison filters and attempt evidence.</p>}
+      {!demo && <div className="eval-repository-toolbar"><p className="eval-guide-note">{importedWorkspace ? `${importedWorkspace.name} is ready. Define a task below.` : `${workspaces.length} local ${workspaces.length === 1 ? 'repository' : 'repositories'} available for tasks`}</p><button className="secondary-action" disabled={!live || showRepositoryImport} onClick={() => setShowRepositoryImport(true)}><Plus size={14} /> Add repository</button></div>}
+      {showRepositoryImport && !demo && <EvalRepositoryImport live={live} onClose={() => setShowRepositoryImport(false)} onAdded={(workspace) => {
+        onWorkspaceAdded(workspace); setImportedWorkspace(workspace); setShowRepositoryImport(false)
+        setGuideVersion((current) => current + 1); setSection('guided')
+      }} />}
+
+      {demo && <p className="evals-demo-notice">Recorded Zod + Hono comparison · 8 real attempts · read-only replay. Four cases demonstrate the workflow, not a model ranking.</p>}
+      {!demo && <div hidden={section !== 'guided'}><EvalGuide key={guideVersion}
+        live={live} workspaces={workspaces} cases={cases} preferredWorkspaceId={importedWorkspace?.id}
+        onCase={(value) => setCases((current) => [value, ...current.filter((item) => item.id !== value.id)])}
+        onSuite={(value) => setSuites((current) => [value, ...current.filter((item) => item.id !== value.id)])}
+        onConfig={(value) => setConfigs((current) => [value, ...current.filter((item) => item.id !== value.id)])}
+        onExperiment={(value) => {
+          setExperiments((current) => [value, ...current.filter((item) => item.id !== value.id)])
+          if (value.status !== 'ready') { setSection('experiments'); setSelectedExperiment(value); setGuideVersion((current) => current + 1) }
+        }}
+      /></div>}
       {section === 'experiments' && <>
-        <div className="evals-page-header"><div><span className="eyebrow">Evals mode</span><h1>Experiments</h1><p>Compare Codex configurations against the same versioned tasks.</p></div></div>
+        <div className="evals-page-header"><div><span className="eyebrow">Evals mode</span><h1>Evaluations</h1><p>Compare reasoning settings against the same tasks.</p></div>{!demo && <button className="primary-action" onClick={() => setSection('guided')}><Plus size={14} /> New evaluation</button>}</div>
         {error && <div className="evals-error">{error}</div>}
-{!demo && (<div className="experiment-launch"><div className="experiment-fields"><input value={experimentName} onChange={(event) => { setExperimentName(event.target.value); setPreflight(null) }} placeholder="Experiment name (optional)" /><select value={suiteVersionId} onChange={(event) => { setSuiteVersionId(Number(event.target.value)); setPreflight(null) }}><option value={0}>Select frozen suite</option>{suites.filter((suite) => suite.latest_version.status === 'frozen').map((suite) => <option key={suite.latest_version.id} value={suite.latest_version.id}>{suite.name} v{suite.latest_version.version}</option>)}</select><select value={configAId} onChange={(event) => { setConfigAId(Number(event.target.value)); setPreflight(null) }}><option value={0}>Config A</option>{configs.map((config) => <option key={config.snapshot.id} value={config.snapshot.id}>{config.name}</option>)}</select><select value={configBId} onChange={(event) => { setConfigBId(Number(event.target.value)); setPreflight(null) }}><option value={0}>Config B (optional)</option>{configs.map((config) => <option key={config.snapshot.id} value={config.snapshot.id}>{config.name}</option>)}</select><label>Samples<input type="number" min={1} max={10} value={samples} onChange={(event) => { setSamples(Number(event.target.value)); setPreflight(null) }} /></label></div>{preflight ? <div className="preflight-card"><div><span className="eyebrow">Preflight</span><strong>{preflight.attempt_count} attempts</strong><p>{preflight.case_count} cases × {preflight.config_count} configurations × {preflight.samples_per_case} samples</p></div><dl><div><dt>Isolation</dt><dd>{preflight.isolation}</dd></div><div><dt>Network</dt><dd>{preflight.network_enabled ? 'Enabled' : 'Disabled'}</dd></div><div><dt>Differences</dt><dd>{preflight.configuration_differences.join(', ') || 'Single configuration'}</dd></div></dl>{preflight.warnings.map((warning) => <p className="preflight-warning" key={warning}>{warning}</p>)}<button className="primary-action" disabled={loading || !!preflight.invalid_case_revision_ids.length} onClick={() => void createExperiment()}>Create {preflight.attempt_count} attempts</button></div> : <button className="primary-action launch-review" disabled={loading || !suites.some((suite) => suite.latest_version.status === 'frozen') || !configs.length} onClick={() => void reviewExperiment()}>Review preflight</button>}</div>)}
+{!demo && (<details className="eval-advanced-launch"><summary>Advanced setup · use existing suites and configurations</summary><div className="experiment-launch"><div className="experiment-fields"><input value={experimentName} onChange={(event) => { setExperimentName(event.target.value); setPreflight(null) }} placeholder="Experiment name (optional)" /><select value={suiteVersionId} onChange={(event) => { setSuiteVersionId(Number(event.target.value)); setPreflight(null) }}><option value={0}>Select frozen suite</option>{suites.filter((suite) => suite.latest_version.status === 'frozen').map((suite) => <option key={suite.latest_version.id} value={suite.latest_version.id}>{suite.name} v{suite.latest_version.version}</option>)}</select><select value={configAId} onChange={(event) => { setConfigAId(Number(event.target.value)); setPreflight(null) }}><option value={0}>Config A</option>{configs.map((config) => <option key={config.snapshot.id} value={config.snapshot.id}>{config.name} · {config.snapshot.reasoning_effort ?? 'default'} reasoning</option>)}</select><select value={configBId} onChange={(event) => { setConfigBId(Number(event.target.value)); setPreflight(null) }}><option value={0}>Config B (optional)</option>{configs.map((config) => <option key={config.snapshot.id} value={config.snapshot.id}>{config.name} · {config.snapshot.reasoning_effort ?? 'default'} reasoning</option>)}</select><label>Samples<input type="number" min={1} max={10} value={samples} onChange={(event) => { setSamples(Number(event.target.value)); setPreflight(null) }} /></label></div>{preflight ? <div className="preflight-card"><div><span className="eyebrow">Preflight</span><strong>{preflight.attempt_count} attempts</strong><p>{preflight.case_count} cases × {preflight.config_count} configurations × {preflight.samples_per_case} samples</p></div><dl><div><dt>Isolation</dt><dd>{preflight.isolation}</dd></div><div><dt>Network</dt><dd>{preflight.network_enabled ? 'Enabled' : 'Disabled'}</dd></div><div><dt>Differences</dt><dd>{preflight.configuration_differences.join(', ') || 'Single configuration'}</dd></div></dl>{preflight.warnings.map((warning) => <p className="preflight-warning" key={warning}>{warning}</p>)}<button className="primary-action" disabled={loading || !!preflight.invalid_case_revision_ids.length} onClick={() => void createExperiment()}>Create {preflight.attempt_count} attempts</button></div> : <button className="primary-action launch-review" disabled={loading || !live || !suiteVersionId || !configAId || !Number.isInteger(samples) || samples < 1 || samples > 10} onClick={() => void reviewExperiment()}>Review preflight</button>}</div></details>)}
         <div className="eval-object-list">{experiments.map((experiment) => <article className="eval-object-card" key={experiment.id}><div><span className={`case-status ${experiment.status === 'completed' ? 'published' : ''}`}>{experiment.status}</span><h2>{experiment.name}</h2><p>{experiment.attempt_count} attempts · {experiment.attempt_status_counts.completed ?? 0} completed · {experiment.attempt_status_counts.running ?? 0} running · {experiment.attempt_status_counts.queued ?? 0} queued</p></div><div className="experiment-actions">{experiment.status === 'ready' && <button className="primary-action" disabled={loading} onClick={() => void experimentAction(experiment, 'start')}>Start experiment</button>}{experiment.status === 'running' && <button className="secondary-action" disabled={loading} onClick={() => void experimentAction(experiment, 'cancel')}>Cancel</button>}{experiment.status === 'failed' && (experiment.attempt_status_counts.interrupted ?? 0) > 0 && <button className="primary-action" disabled={loading} onClick={() => void experimentAction(experiment, 'resume')}>Resume interrupted</button>}{experiment.status !== 'ready' && <button className="secondary-action" disabled={loading} onClick={() => void openExperiment(experiment)}>Open results</button>}</div></article>)}</div>
-        {!experiments.length && <div className="evals-empty-state compact"><Beaker size={26} /><h2>No experiments yet</h2><p>Freeze a suite and capture at least one configuration to create a durable attempt plan.</p></div>}
+        {!experiments.length && <div className="evals-empty-state compact"><Beaker size={26} /><h2>No experiments yet</h2><p>Select New evaluation to add a task and choose reasoning levels. The guide prepares everything needed to run.</p></div>}
         {selectedExperiment && <EvalResultsView key={selectedExperiment.id} experiment={selectedExperiment} onClose={() => setSelectedExperiment(null)} onAttempt={(id) => void openAttempt(id)} />}
       </>}
 
       {section === 'cases' && <>
-        <div className="evals-page-header"><div><span className="eyebrow">Reusable tasks</span><h1>Cases</h1><p>Draft tasks become immutable once validated and published.</p></div><button className="primary-action" disabled={demo || !live || !workspaces.length} onClick={() => setShowCreate(true)}><Plus size={14} /> New case</button></div>
+        <div className="evals-page-header"><div><span className="eyebrow">Reusable tasks</span><h1>Tasks</h1><p>Draft tasks become immutable once validated and published.</p></div><button className="primary-action" disabled={demo || !live || !workspaces.length} onClick={() => setShowCreate(true)}><Plus size={14} /> New task</button></div>
         {error && <div className="evals-error">{error}</div>}
         {showCreate && <div className="case-create-card">
           <div><span className="eyebrow">Draft case</span><h2>Define the task</h2></div>
@@ -301,7 +330,7 @@ export function EvalsMode({ live, demo, workspaces }: Props) {
           <div className="case-create-actions"><button className="secondary-action" onClick={() => setShowCreate(false)}>Cancel</button><button className="primary-action" disabled={loading || !title.trim() || !prompt.trim() || !selectedWorkspaceId} onClick={() => void createCase()}>{loading ? 'Creating…' : 'Create draft'}</button></div>
         </div>}
         {!showCreate && cases.length === 0 && <div className="evals-empty-state compact"><FlaskConical size={24} /><h2>No cases yet</h2><p>Create a draft with a workspace and task prompt. Validation and deterministic scorers come before publishing.</p></div>}
-        <div className="case-list">{cases.map((evalCase) => <article className={`case-card ${editingCaseId === evalCase.id ? 'editing' : ''}`} key={evalCase.id}><div className="case-card-summary"><div><span className={`case-status ${evalCase.latest_revision.status}`}>{evalCase.latest_revision.status}</span><h2>{evalCase.title}</h2><p>{evalCase.latest_revision.prompt}</p></div><dl><div><dt>Workspace</dt><dd>{workspaces.find((workspace) => workspace.id === evalCase.latest_revision.workspace_id)?.name ?? `#${evalCase.latest_revision.workspace_id}`}</dd></div><div><dt>Validation</dt><dd>{evalCase.latest_revision.validation_status.replace('_', ' ')}</dd></div><div><dt>Revision</dt><dd>v{evalCase.latest_revision.revision}</dd></div></dl>{evalCase.latest_revision.status === 'draft' && <button className="secondary-action" onClick={() => editCase(evalCase)}>Configure</button>}{evalCase.latest_revision.status === 'published' && <button className="secondary-action" disabled={demo || loading} onClick={() => void reviseCase(evalCase)}>New draft revision</button>}</div>{editingCaseId === evalCase.id && <div className="case-editor"><label>Task prompt<textarea value={draftPrompt} onChange={(event) => setDraftPrompt(event.target.value)} rows={5} /></label><label>Base commit SHA<input value={baseSha} onChange={(event) => setBaseSha(event.target.value)} placeholder="Full 40-character commit SHA" /></label><label>Verifier command<input value={verifierCommand} onChange={(event) => setVerifierCommand(event.target.value)} placeholder="pytest -q" /></label><label>Base-state expectation<select value={baseExpectation} onChange={(event) => setBaseExpectation(event.target.value)}><option value="required_scorer_fails">At least one required scorer fails</option><option value="required_scorer_passes">All required scorers pass</option><option value="none">No base result requirement</option></select></label><label>Held-out verifier path<input value={heldOutPath} onChange={(event) => { setHeldOutPath(event.target.value); setClearHeldOut(false) }} placeholder="tests/hidden_verifier.py" /></label><label>Held-out verifier file content<textarea value={heldOutContent} onChange={(event) => setHeldOutContent(event.target.value)} rows={5} placeholder="Installed for validation and after the agent run" /></label>{evalCase.latest_revision.verifier_artifact_id && <label className="held-out-clear"><input type="checkbox" checked={clearHeldOut} onChange={(event) => setClearHeldOut(event.target.checked)} /> Remove existing held-out bundle</label>}{evalCase.latest_revision.verifier_artifact_id && !clearHeldOut && <p>Held-out verifier bundle attached. Enter a new path and content to replace it.</p>}{Array.isArray(evalCase.latest_revision.validation_details.problems) && evalCase.latest_revision.validation_details.problems.length > 0 && <ul>{(evalCase.latest_revision.validation_details.problems as string[]).map((problem) => <li key={problem}>{problem}</li>)}</ul>}<div className="case-create-actions"><button className="secondary-action" onClick={() => setEditingCaseId(null)}>Close</button><button className="secondary-action" disabled={demo || loading} onClick={() => void saveDraft(evalCase)}>Save</button><button className="secondary-action" disabled={loading || !evalCase.latest_revision.scorer_spec.length} onClick={() => void caseAction(evalCase, 'validate')}>Validate</button><button className="primary-action" disabled={loading || evalCase.latest_revision.validation_status !== 'valid'} onClick={() => void caseAction(evalCase, 'publish')}>Publish revision</button></div></div>}</article>)}</div>
+        <div className="case-list">{cases.map((evalCase) => !evalCase.latest_revision ? <article className="eval-object-card" key={evalCase.id}><h2>{evalCase.title}</h2><p>No case revision is available.</p></article> : <article className={`case-card ${editingCaseId === evalCase.id ? 'editing' : ''}`} key={evalCase.id}><div className="case-card-summary"><div><span className={`case-status ${evalCase.latest_revision.status}`}>{evalCase.latest_revision.status}</span><h2>{evalCase.title}</h2><p>{evalCase.latest_revision.prompt}</p></div><dl><div><dt>Workspace</dt><dd>{workspaces.find((workspace) => workspace.id === evalCase.latest_revision?.workspace_id)?.name ?? `#${evalCase.latest_revision.workspace_id}`}</dd></div><div><dt>Validation</dt><dd>{evalCase.latest_revision.validation_status.replace('_', ' ')}</dd></div><div><dt>Revision</dt><dd>v{evalCase.latest_revision.revision}</dd></div></dl>{evalCase.latest_revision.status === 'draft' && <button className="secondary-action" onClick={() => editCase(evalCase)}>Configure</button>}{evalCase.latest_revision.status === 'published' && <button className="secondary-action" disabled={demo || loading} onClick={() => void reviseCase(evalCase)}>New draft revision</button>}</div>{editingCaseId === evalCase.id && <div className="case-editor"><label>Task prompt<textarea value={draftPrompt} onChange={(event) => setDraftPrompt(event.target.value)} rows={5} /></label><label>Base commit SHA<input value={baseSha} onChange={(event) => setBaseSha(event.target.value)} placeholder="Full 40-character commit SHA" /></label><label>Verifier command<input value={verifierCommand} onChange={(event) => setVerifierCommand(event.target.value)} placeholder="pytest -q" /></label><label>Base-state expectation<select value={baseExpectation} onChange={(event) => setBaseExpectation(event.target.value)}><option value="required_scorer_fails">At least one required scorer fails</option><option value="required_scorer_passes">All required scorers pass</option><option value="none">No base result requirement</option></select></label><label>Held-out verifier path<input value={heldOutPath} onChange={(event) => { setHeldOutPath(event.target.value); setClearHeldOut(false) }} placeholder="tests/hidden_verifier.py" /></label><label>Held-out verifier file content<textarea value={heldOutContent} onChange={(event) => setHeldOutContent(event.target.value)} rows={5} placeholder="Installed for validation and after the agent run" /></label>{evalCase.latest_revision.verifier_artifact_id && <label className="held-out-clear"><input type="checkbox" checked={clearHeldOut} onChange={(event) => setClearHeldOut(event.target.checked)} /> Remove existing held-out bundle</label>}{evalCase.latest_revision.verifier_artifact_id && !clearHeldOut && <p>Held-out verifier bundle attached. Enter a new path and content to replace it.</p>}{Array.isArray(evalCase.latest_revision.validation_details.problems) && evalCase.latest_revision.validation_details.problems.length > 0 && <ul>{(evalCase.latest_revision.validation_details.problems as string[]).map((problem) => <li key={problem}>{problem}</li>)}</ul>}<div className="case-create-actions"><button className="secondary-action" onClick={() => setEditingCaseId(null)}>Close</button><button className="secondary-action" disabled={demo || loading} onClick={() => void saveDraft(evalCase)}>Save</button><button className="secondary-action" disabled={loading || !evalCase.latest_revision.scorer_spec.length} onClick={() => void caseAction(evalCase, 'validate')}>Validate</button><button className="primary-action" disabled={loading || evalCase.latest_revision.validation_status !== 'valid'} onClick={() => void caseAction(evalCase, 'publish')}>Publish revision</button></div></div>}</article>)}</div>
       </>}
 
       {section === 'suites' && <><div className="evals-page-header"><div><span className="eyebrow">Versioned collections</span><h1>Suites</h1><p>Freeze ordered collections of published cases.</p></div></div>{error && <div className="evals-error">{error}</div>}{!demo && <div className="eval-create-row"><input value={newSuiteName} onChange={(event) => setNewSuiteName(event.target.value)} placeholder="Regression suite" /><button className="primary-action" disabled={loading || !newSuiteName.trim()} onClick={() => void createSuite()}><Plus size={14} /> Create suite</button></div>}<div className="eval-object-list">{suites.map((suite) => <article className="eval-object-card" key={suite.id}><div><span className={`case-status ${suite.latest_version.status === 'frozen' ? 'published' : ''}`}>{suite.latest_version.status}</span><h2>{suite.name}</h2><p>{suite.latest_version.cases.length} published case{suite.latest_version.cases.length === 1 ? '' : 's'} · version {suite.latest_version.version}</p></div>{suite.latest_version.status === 'draft' && <button className="primary-action" disabled={loading || !suite.latest_version.cases.length} onClick={() => void freezeSuite(suite)}>Freeze version</button>}</article>)}</div>{!suites.length && <div className="evals-empty-state compact"><Layers3 size={24} /><h2>No suites yet</h2><p>Publish cases first, then create a frozen collection for repeatable experiments.</p></div>}</>}
@@ -332,8 +361,7 @@ export function EvalsMode({ live, demo, workspaces }: Props) {
           <h3>Final diff and artifacts</h3>
           <div className="attempt-artifact-row"><p>{selectedAttempt.diff ? `${selectedAttempt.diff.file_count} changed file${selectedAttempt.diff.file_count === 1 ? '' : 's'}` : 'No final diff is available.'} · {selectedAttempt.artifacts.length} artifact{selectedAttempt.artifacts.length === 1 ? '' : 's'}</p>{selectedAttempt.diff && <button className="secondary-action" onClick={() => setEvalDiff(selectedAttempt.diff)}>Inspect full diff</button>}</div>
           {selectedAttempt.artifacts.map((artifact) => <div className="artifact-row" key={artifact.id}><span>{artifact.type}</span><code>{artifact.byte_size.toLocaleString()} bytes · {artifact.sha256.slice(0, 12)}</code></div>)}
-          <h3>Normalized steps</h3><div className="attempt-steps">{attemptSteps.map((step) => <article key={step.sequence}><span>{step.sequence}</span><div><strong>{step.title}</strong><p>{step.kind.replaceAll('_', ' ')} · {step.status}{step.duration_ms == null ? '' : ` · ${step.duration_ms} ms`}</p></div></article>)}{!attemptSteps.length && <p>No normalized execution steps are available.</p>}</div>
-          <details className="attempt-raw-events"><summary>Raw event previews ({attemptEvents.length})</summary>{attemptEvents.map((event) => <article key={event.id}><strong>#{event.id} · {event.type}</strong><pre>{JSON.stringify(event.payload, null, 2)}</pre></article>)}</details>
+          <EvalTraceView steps={attemptSteps} events={attemptEvents} />
         </div>
       </section>
     </div>}

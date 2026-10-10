@@ -92,7 +92,7 @@ def capture_instruction_files(
                         }
                     )
                 break
-            except OSError, ValueError:
+            except (OSError, ValueError):
                 observations.append(
                     {
                         "kind": "instruction_capture",

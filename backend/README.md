@@ -15,7 +15,7 @@ Electron overrides this with a database inside its application-data directory. S
 SQLite is configured with foreign keys, WAL mode, and a five-second busy timeout.
 
 The durable schema is defined in `database/models.py` and its Python record/response
-types in `database/schemas.py` and `database/types.py`:
+types in `database/schemas.py`, `database/types.py`, and `rpc_contract.py`:
 
 | Table | Stored data |
 | --- | --- |
@@ -70,14 +70,19 @@ The backend deliberately rejects `danger-full-access`. Codex inherits a filtered
 
 HTTP JSON-RPC is available at `POST /rpc` with `Authorization: Bearer <token>`.
 
+The shared method/parameter/result map is in `rpc_contract.py`. Both RPC transports validate successful results against it; malformed server output returns an internal error rather than an invalid-parameter error. Generate frontend types with `.venv/bin/python tools/generate_rpc_contract.py`; add `--check` to verify drift without writing. See [contract checks and boundaries](../docs/rpc-contract.md).
+
+Handlers are registered with `@rpc` and grouped under `rpc_handlers/` for core methods and `evals/{cases,suites,configs,experiments,attempts}.py` for Evals. Routers retain the same contract and error mapping; aliases share a handler. See [handler structure and tests](../docs/rpc-handlers.md).
+
 The desktop client uses `ws://127.0.0.1:8000/ws` and sends the token through the `auth.<token>` WebSocket subprotocol. This keeps the secret out of access-log URLs. Connections require both the token and an allowed `Origin`.
 
 Supported methods:
 
 - `health.check`
 - `workspace.create`, `workspace.list`, `workspace.get`
-- `workspace.git_status`, `workspace.git_stage`, `workspace.git_commit`, `workspace.git_push_main`
+- `workspace.git_status`, `workspace.git_stage`, `workspace.git_commit`, `workspace.git_push` (legacy `workspace.git_push_main` remains available)
 - `session.create`, `session.list`, `session.get`, `session.history`
+
 - `session.send`, `session.cancel`, `session.stop`
 - `session.subscribe`, `session.unsubscribe`
 - `run.get`, `run.events`, `run.artifacts`
@@ -86,6 +91,8 @@ Supported methods:
 - `eval.config.capture`, `eval.config.diff`, `eval.config.list`, `eval.config.get`
 - `eval.experiment.preflight`, `eval.experiment.create`, `eval.experiment.start`, `eval.experiment.cancel`, `eval.experiment.list`, `eval.experiment.get`
 - `eval.attempt.get`, `eval.attempt.steps`, `eval.attempt.events`
+
+Catalog lists accept `limit` (1–500, default 500) and `before_id` (`0` for the first ID-descending page, then the last returned ID). Stop on a short page. Omitting the cursor preserves legacy display ordering but returns only one bounded page. `session.list` also accepts `workspace_id`; keep it unchanged across pages. See [catalog pagination](../docs/catalog-pagination.md) for UI behavior and concurrency limits.
 
 `session.history.after_sequence` uses the durable SQLite event ID. Clients should subscribe first, then request history so events produced during synchronization can be deduplicated safely.
 
@@ -108,18 +115,29 @@ do not produce overlapping change reviews. The new `run_diffs` table is created
 on startup without altering existing tables; runs recorded before this feature
 report that no diff was captured.
 
-The workspace Git actions require a workspace at the repository root on the
-`main` branch, with no active run. Stage executes `git add .`; commit requires a
-message and executes `git commit -m <message>`; push executes
-`git push -u origin main`. Commands run without a shell, and push uses the
-machine's existing Git credentials. No branch is created automatically.
+Workspace Git actions require the repository root on a checked-out branch, with no active run. Status returns NUL-parsed changed paths (including rename origins), staged/unstaged flags, configured remote names, and an `index_token` fingerprint of the branch and staged binary diff. The UI refreshes this data when opening a review.
+
+- `workspace.git_stage`: requires `workspace_id`, explicit non-empty `paths`, and `expected_branch`. Only available changed files are accepted; directories, traversal, duplicates, and unknown paths are rejected. Literal pathspec handling prevents filenames from becoming Git patterns/options. Staging uses current full-file contents, not hunks; nothing is selected by default.
+- `workspace.git_commit`: requires `workspace_id`, `message`, `expected_branch`, and the reviewed `index_token`. The UI lists all staged files, including files staged outside the app. If the staged diff or branch changed since review, the action is rejected until refreshed.
+- `workspace.git_push`: requires `workspace_id`, a configured `remote` name, destination `branch`, and `expected_branch`. Pushes `HEAD:refs/heads/<branch>` with upstream tracking; no force option or implicit checkout. Branch names are checked by Git; arbitrary remote URLs/options are rejected. The legacy push-main method retains its main/origin restriction.
+
+Commands run without a shell and use the machine's existing Git credentials and hooks. App actions serialize with chat runs, but cannot lock out external Git tools: a CLI/hook can still change the index/ref after validation. Review guards detect already-stale inputs, not provide a transaction across processes. Automated mutation tests use disposable local repositories and remotes; they do not commit or push the user's workspace.
 
 ## Checks
 
 ```sh
 .venv/bin/pytest -q
-.venv/bin/ruff format --check main.py settings.py event_broker.py agent_runtime.py codebase_map.py run_diffs.py database tests
-.venv/bin/ruff check main.py settings.py event_broker.py agent_runtime.py codebase_map.py run_diffs.py database tests
+.venv/bin/ruff format --check .
+.venv/bin/ruff check .
+uv lock --check --offline
 ```
 
 The tests use small subprocess adapters and never consume a Codex subscription.
+
+The backend virtual project is `agent-workbench-backend`; its executable/import paths are unchanged. Ruff enforces bug, async, modernization, simplification, security, broad-exception, and unused-suppression rules with scoped fixture/tool exceptions. Python 3.14 remains required; the Python 3.13 lint/format syntax target keeps multi-exception handlers parenthesized. See [repository policy](../docs/lint-repository-policy.md) for boundaries and PRD ignore conventions.
+
+### GitHub repositories for Evals
+
+Evals → Add repository accepts an HTTPS GitHub repository link, clones the full history, and registers it as a workspace for new evaluation tasks. Repeated imports reuse the existing local clone without fetching updates. Private repositories use existing Git credentials; interactive login prompts are disabled.
+
+Clones are stored next to the database in `eval-repositories/`. Set `EVAL_REPOSITORY_DIRECTORY` to choose another location. Importing does not install dependencies or run repository code.

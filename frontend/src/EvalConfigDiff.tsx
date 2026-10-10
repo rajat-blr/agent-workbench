@@ -13,7 +13,7 @@ export function EvalConfigDiff({ configs }: { configs: EvalConfig[] }) {
   const compare = async () => {
     setLoading(true); setError(null); setDifferences(null)
     try {
-      const result = await rpcClient.request<{ differences: Difference[] }>('eval.config.diff', { left_snapshot_id: left, right_snapshot_id: right })
+      const result = await rpcClient.request('eval.config.diff', { left_snapshot_id: left, right_snapshot_id: right })
       setDifferences(result.differences)
     } catch (failure) { setError(failure instanceof Error ? failure.message : 'Could not compare snapshots.') }
     finally { setLoading(false) }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import './App.css'
 import './refinement.css'
@@ -11,34 +11,29 @@ import { SettingsDialog } from './SettingsDialog'
 import { WorkPanel } from './WorkPanel'
 import { WorkspaceSidebar } from './WorkspaceSidebar'
 import { isDemoMode, rpcClient } from './runtime'
-import type { ActivityEvent, ConnectionStatus, GitStatus, Message, RunDiff, Session, SessionHistory, SessionStatus, Workspace } from './runtime'
+import type { ConnectionStatus, GitStatus, RunDiff, Session, Workspace } from './runtime'
+import { eventStatus, fetchFullHistory, LatestRequest } from './chatSync'
+import { fetchCatalog, sortSessions, sortWorkspaces } from './catalogPagination'
+import { useChatSync } from './useChatSync'
 import { summarizeWork } from './workSummary'
 
-const emptyWorkspace: Workspace = { id: 0, name: 'No workspace selected', path: 'Add a workspace to begin' }
-const emptySession: Session = { id: 0, workspace_id: 0, provider: 'codex', status: 'idle' }
+const emptyWorkspace: Workspace = { id: 0, name: 'No workspace selected', path: 'Add a workspace to begin', created_at: '' }
+const emptySession: Session = { id: 0, workspace_id: 0, provider: 'codex', status: 'idle', title: null, created_at: '', updated_at: '' }
 
-async function fetchFullHistory(sessionId: number, afterSequence = 0): Promise<SessionHistory> {
-  const history = await rpcClient.request<SessionHistory>('session.history', { session_id: sessionId, after_sequence: afterSequence, limit: 2000 })
-  while (history.has_more) {
-    const page = await rpcClient.request<SessionHistory>('session.history', { session_id: sessionId, after_sequence: history.last_sequence, limit: 2000 })
-    if (page.last_sequence <= history.last_sequence) throw new Error('Session history did not advance')
-    history.events.push(...page.events)
-    history.last_sequence = page.last_sequence
-    history.has_more = page.has_more
-  }
-  return history
-}
+const fetchHistory = (sessionId: number, afterSequence = 0) => fetchFullHistory(
+  (id, sequence) => rpcClient.request('session.history', { session_id: id, after_sequence: sequence, limit: 2000 }),
+  sessionId, afterSequence,
+)
 
 function App() {
-  const [productMode, setProductMode] = useState<'chat' | 'evals'>(() => localStorage.getItem('productMode') === 'evals' ? 'evals' : 'chat')
+  const [productMode, setProductMode] = useState<'chat' | 'evals'>(() => isDemoMode || localStorage.getItem('productMode') === 'evals' ? 'evals' : 'chat')
   const [creatingEval, setCreatingEval] = useState(false)
   const [connection, setConnection] = useState<ConnectionStatus>('connecting')
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [sessions, setSessions] = useState<Session[]>([])
   const [activeWorkspace, setActiveWorkspace] = useState<Workspace>(emptyWorkspace)
   const [activeSession, setActiveSession] = useState<Session>(emptySession)
-  const [messages, setMessages] = useState<Message[]>([])
-  const [events, setEvents] = useState<ActivityEvent[]>([])
+  const { store, messages, events } = useChatSync()
   const [runDiff, setRunDiff] = useState<RunDiff | null>(null)
   const [reviewDiff, setReviewDiff] = useState<RunDiff | null>(null)
   const [prompt, setPrompt] = useState('')
@@ -48,18 +43,21 @@ function App() {
   const [showMap, setShowMap] = useState(false)
   const [workspaceMenuId, setWorkspaceMenuId] = useState<number | null>(null)
   const [sessionMenuId, setSessionMenuId] = useState<number | null>(null)
-  const [gitStatus, setGitStatus] = useState<GitStatus | null>(null)
+  const [gitStatusState, setGitStatusState] = useState<{ workspaceId: number; status: GitStatus } | null>(null)
+  const [gitRequests] = useState(() => new LatestRequest())
+  const gitStatus = gitStatusState?.workspaceId === activeWorkspace.id ? gitStatusState.status : null
+  const setGitStatus = useCallback((status: GitStatus) => {
+    gitRequests.invalidate()
+    setGitStatusState({ workspaceId: activeWorkspace.id, status })
+  }, [activeWorkspace.id, gitRequests])
   const [syncing, setSyncing] = useState(false)
   const [checkingBackend, setCheckingBackend] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showDemoUnavailable, setShowDemoUnavailable] = useState(false)
-  const activeSessionId = useRef(activeSession.id)
-  const lastSequenceRef = useRef(0)
   const conversationScrollRef = useRef<HTMLDivElement>(null)
   const diffRefreshTimer = useRef<number | undefined>(undefined)
   const unavailableInDemo = () => setShowDemoUnavailable(true)
 
-  useEffect(() => { activeSessionId.current = activeSession.id }, [activeSession.id])
   useEffect(() => { localStorage.setItem('showActivity', String(showActivity)) }, [showActivity])
   useEffect(() => { localStorage.setItem('sidebarCollapsed', String(sidebarCollapsed)) }, [sidebarCollapsed])
   useEffect(() => { localStorage.setItem('productMode', productMode) }, [productMode])
@@ -72,6 +70,7 @@ function App() {
   }, [activeSession.id, messages.length])
 
   const live = connection === 'connected'
+  const activeSessionExists = sessions.some(session => session.id === activeSession.id)
   const currentSession = sessions.find((session) => session.id === activeSession.id) ?? activeSession
   const groupedSessions = useMemo(() => sessions.filter((session) => session.workspace_id === activeWorkspace.id), [sessions, activeWorkspace.id])
   const workSummary = useMemo(() => summarizeWork(events, currentSession.status), [events, currentSession.status])
@@ -79,24 +78,23 @@ function App() {
   const earlierRunIds = useMemo(() => [...new Set([...messages, ...events].map((item) => item.run_id).filter((id): id is number => id != null && id !== latestRunId))].sort((a, b) => b - a), [messages, events, latestRunId])
 
   useEffect(() => {
+    let cancelled = false
     rpcClient.onStatus(setConnection)
     rpcClient.onEvent((event) => {
-      if (event.session_id !== activeSessionId.current) return
-      if (event.sequence && event.sequence <= lastSequenceRef.current) return
-      if (event.sequence) lastSequenceRef.current = event.sequence
-      setEvents((current) => current.some((item) => item.sequence === event.sequence) ? current : [...current, event])
-      if (event.type === 'assistant.text' && event.payload.content) setMessages((current) => [...current, { role: 'assistant', content: event.payload.content as string, run_id: event.run_id }])
+      const previousSequence = store.getSnapshot().sequence
+      if (!store.receive(event)) return
       if (event.run_id != null && (event.type === 'artifact.run_diff' || event.type === 'codex.item.completed' || event.type === 'session.completed' || event.type === 'session.failed' || event.type === 'session.cancelled')) {
         const sessionId = event.session_id
         const runId = event.run_id
+        const ticket = store.capture()
         if (diffRefreshTimer.current) window.clearTimeout(diffRefreshTimer.current)
         diffRefreshTimer.current = window.setTimeout(() => {
-          void rpcClient.request<RunDiff>('run.diff.get', { session_id: sessionId, run_id: runId }).then((diff) => { if (activeSessionId.current === sessionId) setRunDiff(diff) }).catch(() => undefined)
+          void rpcClient.request('run.diff.get', { session_id: sessionId, run_id: runId }).then((diff) => { if (store.matches(ticket)) setRunDiff(current => current && current.run_id > diff.run_id ? current : diff) }).catch(() => undefined)
         }, event.type === 'artifact.run_diff' ? 0 : 600)
       }
       if (event.type.startsWith('session.')) {
-        const status = event.type.replace('session.', '') as SessionStatus
-        if (['running', 'stopping', 'completed', 'failed', 'cancelled'].includes(status)) {
+        const status = eventStatus(event)
+        if (status && (event.sequence == null || event.sequence >= previousSequence)) {
           setActiveSession((session) => ({ ...session, status }))
           setSessions((current) => current.map((session) => session.id === event.session_id ? { ...session, status } : session))
         }
@@ -111,34 +109,39 @@ function App() {
         const backendConnection = window.desktop
           ? await window.desktop.getBackendConnection()
           : { url: 'http://127.0.0.1:8000', token: import.meta.env.VITE_BACKEND_AUTH_TOKEN || '' }
+        if (cancelled) return
         await rpcClient.connect(backendConnection)
-      } catch { setError('Waiting for the backend connection…') }
+      } catch { if (!cancelled) setError('Waiting for the backend connection…') }
     }
     void connect()
-    return () => { if (diffRefreshTimer.current) window.clearTimeout(diffRefreshTimer.current); rpcClient.close() }
-  }, [])
+    return () => { cancelled = true; if (diffRefreshTimer.current) window.clearTimeout(diffRefreshTimer.current); rpcClient.close() }
+  }, [store])
 
   useEffect(() => {
     if (!live || !activeSession.id || latestRunId == null) return
     let cancelled = false
-    void rpcClient.request<RunDiff>('run.diff.get', { session_id: activeSession.id, run_id: latestRunId }).then((diff) => { if (!cancelled) setRunDiff(diff) }).catch(() => undefined)
+    const ticket = store.capture()
+    void rpcClient.request('run.diff.get', { session_id: activeSession.id, run_id: latestRunId }).then((diff) => { if (!cancelled && store.matches(ticket)) setRunDiff(diff) }).catch(() => undefined)
     return () => { cancelled = true }
-  }, [activeSession.id, latestRunId, live])
+  }, [activeSession.id, latestRunId, live, store])
 
   useEffect(() => {
     if (!live) return
+    let cancelled = false
+    const ticket = store.capture()
     const loadApplicationState = async () => {
       try {
         const [loadedWorkspaces, loadedSessions] = await Promise.all([
-          rpcClient.request<Workspace[]>('workspace.list'),
-          rpcClient.request<Session[]>('session.list'),
+          fetchCatalog((params) => rpcClient.request('workspace.list', params), () => !cancelled && store.matches(ticket)).then(sortWorkspaces),
+          fetchCatalog((params) => rpcClient.request('session.list', params), () => !cancelled && store.matches(ticket)).then(sortSessions),
         ])
+        if (cancelled || !store.matches(ticket)) return
         setWorkspaces(loadedWorkspaces)
         setSessions(loadedSessions)
         setError(null)
-        const selectedSession = loadedSessions.find((session) => session.id === activeSessionId.current) ?? loadedSessions[0]
+        const selectedSession = loadedSessions.find((session) => session.id === store.getSnapshot().sessionId) ?? loadedSessions[0]
         if (selectedSession) {
-          if (selectedSession.id !== activeSessionId.current) { lastSequenceRef.current = 0; setMessages([]); setEvents([]) }
+          if (selectedSession.id !== store.getSnapshot().sessionId) store.select(selectedSession.id)
           setActiveSession(selectedSession)
           const sessionWorkspace = loadedWorkspaces.find((workspace) => workspace.id === selectedSession.workspace_id)
           if (sessionWorkspace) setActiveWorkspace(sessionWorkspace)
@@ -146,55 +149,65 @@ function App() {
           const workspace = loadedWorkspaces[0] ?? emptyWorkspace
           setActiveWorkspace(workspace)
           setActiveSession({ ...emptySession, workspace_id: workspace.id })
-          setMessages([]); setEvents([]); lastSequenceRef.current = 0
+          store.select(0)
         }
-      } catch { setError('Connected to the backend, but application data could not be loaded.') }
+      } catch {
+        if (!cancelled && store.matches(ticket)) setError('Connected to the backend, but application data could not be loaded.')
+        cancelled = true // Stop the other catalog scan when either request fails.
+      }
     }
     void loadApplicationState()
-  }, [live])
+    return () => { cancelled = true }
+  }, [live, store])
 
   useEffect(() => {
-    if (!live || !activeSession.id || !sessions.some((session) => session.id === activeSession.id)) return
+    if (!live || !activeSession.id || !activeSessionExists) return
+    const ticket = store.beginHistory()
     const reconcile = async () => {
-      const afterSequence = lastSequenceRef.current
       try {
         await rpcClient.request('session.subscribe', { session_id: activeSession.id })
-        const history = await fetchFullHistory(activeSession.id, afterSequence)
-        setMessages(history.conversation)
-        setEvents((current) => afterSequence === 0 ? history.events : [...current, ...history.events.filter((event) => !current.some((item) => item.sequence === event.sequence))])
-        lastSequenceRef.current = Math.max(lastSequenceRef.current, history.last_sequence)
-      } catch { setError('The session could not be synchronized.') }
+        if (!store.isCurrentHistory(ticket)) return
+        const history = await fetchHistory(activeSession.id, ticket.afterSequence)
+        store.applyHistory(ticket, history)
+      } catch { if (store.isCurrentHistory(ticket)) setError('The session could not be synchronized.') }
     }
     void reconcile()
-    return () => { void rpcClient.request('session.unsubscribe', { session_id: activeSession.id }).catch(() => undefined) }
-  }, [activeSession.id, live, sessions])
+    return () => { store.cancelHistory(ticket); void rpcClient.request('session.unsubscribe', { session_id: activeSession.id }).catch(() => undefined) }
+  }, [activeSession.id, live, activeSessionExists, store])
 
-  const refreshGitStatus = async (workspace = activeWorkspace) => {
+  const refreshGitStatus = useCallback(async (workspace: Workspace) => {
     if (!live || !workspace.id) return
+    const ticket = store.capture()
+    const version = gitRequests.begin()
     try {
-      setGitStatus(await rpcClient.request<GitStatus>('workspace.git_status', { workspace_id: workspace.id }))
+      const status = await rpcClient.request('workspace.git_status', { workspace_id: workspace.id })
+      if (!store.matches(ticket) || !gitRequests.matches(version)) return
+      setGitStatusState({ workspaceId: workspace.id, status })
       setError(null)
-    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not read Git status.') }
-  }
+    } catch (requestError) { if (store.matches(ticket) && gitRequests.matches(version)) setError(requestError instanceof Error ? requestError.message : 'Could not read Git status.') }
+  }, [live, store, gitRequests])
 
   useEffect(() => {
-    setGitStatus(null)
     if (!workspaces.some((workspace) => workspace.id === activeWorkspace.id)) return
-    void refreshGitStatus(activeWorkspace)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeWorkspace.id, live, workspaces, currentSession.status])
+    let cancelled = false
+    void Promise.resolve().then(() => { if (!cancelled) void refreshGitStatus(activeWorkspace) })
+    return () => { cancelled = true; gitRequests.invalidate() }
+  }, [activeWorkspace, live, workspaces, currentSession.status, refreshGitStatus, gitRequests])
 
   const selectSession = (session: Session, selectedWorkspace?: Workspace) => {
     const workspace = selectedWorkspace ?? workspaces.find((item) => item.id === session.workspace_id)
     if (workspace) setActiveWorkspace(workspace)
-    lastSequenceRef.current = 0; setMessages([]); setEvents([]); setRunDiff(null); setReviewDiff(null); setShowMap(false); setActiveSession(session); setSessionMenuId(null)
+    if (store.getSnapshot().sessionId !== session.id) {
+      store.select(session.id); setRunDiff(null); setReviewDiff(null); setShowMap(false)
+    }
+    setActiveSession(session); setSessionMenuId(null)
   }
 
   const selectWorkspace = (workspace: Workspace) => {
     setActiveWorkspace(workspace)
     const firstSession = sessions.find((session) => session.workspace_id === workspace.id)
     if (firstSession) selectSession(firstSession)
-    else { setActiveSession({ ...emptySession, workspace_id: workspace.id }); setMessages([]); setEvents([]); lastSequenceRef.current = 0 }
+    else { store.select(0); setRunDiff(null); setReviewDiff(null); setShowMap(false); setActiveSession({ ...emptySession, workspace_id: workspace.id }) }
     setWorkspaceMenuId(null)
   }
 
@@ -204,11 +217,11 @@ function App() {
     if (!path) return
     let workspace: Workspace
     try {
-      workspace = await rpcClient.request<Workspace>('workspace.create', { path, name: path.split('/').pop() || 'Workspace' })
+      workspace = await rpcClient.request('workspace.create', { path, name: path.split('/').pop() || 'Workspace' })
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not add workspace.'); return }
     setWorkspaces((current) => [...current, workspace])
     try {
-      const session = await rpcClient.request<Session>('session.create', { workspace_id: workspace.id, provider: 'codex' })
+      const session = await rpcClient.request('session.create', { workspace_id: workspace.id, provider: 'codex' })
       setSessions((current) => [session, ...current]); selectSession(session, workspace); setError(null)
     } catch (requestError) {
       selectWorkspace(workspace)
@@ -220,7 +233,7 @@ function App() {
     if (isDemoMode) { unavailableInDemo(); return }
     if (!workspaces.some((workspace) => workspace.id === activeWorkspace.id)) { setError('Add a workspace before creating a session.'); return }
     try {
-      const session = await rpcClient.request<Session>('session.create', { workspace_id: activeWorkspace.id, provider: 'codex' })
+      const session = await rpcClient.request('session.create', { workspace_id: activeWorkspace.id, provider: 'codex' })
       setSessions((current) => [session, ...current]); selectSession(session); setError(null)
     } catch { setError('Could not create a session.') }
   }
@@ -230,7 +243,7 @@ function App() {
     const name = window.prompt('Workspace name', workspace.name)?.trim()
     if (!name || name === workspace.name) return
     try {
-      const renamed = await rpcClient.request<Workspace>('workspace.rename', { workspace_id: workspace.id, name })
+      const renamed = await rpcClient.request('workspace.rename', { workspace_id: workspace.id, name })
       setWorkspaces((current) => current.map((item) => item.id === renamed.id ? renamed : item))
       if (activeWorkspace.id === renamed.id) setActiveWorkspace(renamed)
       setWorkspaceMenuId(null); setError(null)
@@ -247,8 +260,8 @@ function App() {
       setWorkspaces(remainingWorkspaces); setSessions(remainingSessions); setWorkspaceMenuId(null)
       const nextWorkspace = remainingWorkspaces[0] ?? emptyWorkspace
       const nextSession = remainingSessions.find((session) => session.workspace_id === nextWorkspace.id)
-      setActiveWorkspace(nextWorkspace); setActiveSession(nextSession ?? { ...emptySession, workspace_id: nextWorkspace.id })
-      setMessages([]); setEvents([]); lastSequenceRef.current = 0; setError(null)
+      store.select(nextSession?.id ?? 0); setActiveWorkspace(nextWorkspace); setActiveSession(nextSession ?? { ...emptySession, workspace_id: nextWorkspace.id })
+      setRunDiff(null); setReviewDiff(null); setError(null)
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not remove workspace.') }
   }
 
@@ -261,7 +274,7 @@ function App() {
       setSessions(remaining); setSessionMenuId(null)
       if (session.id === activeSession.id) {
         const next = remaining.find((item) => item.workspace_id === activeWorkspace.id)
-        setActiveSession(next ?? { ...emptySession, workspace_id: activeWorkspace.id }); setMessages([]); setEvents([]); lastSequenceRef.current = 0
+        store.select(next?.id ?? 0); setActiveSession(next ?? { ...emptySession, workspace_id: activeWorkspace.id }); setRunDiff(null); setReviewDiff(null)
       }
       setError(null)
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not delete session.') }
@@ -273,33 +286,45 @@ function App() {
     if (!content || !live) return
     if (!sessions.some((session) => session.id === activeSession.id && session.workspace_id === activeWorkspace.id)) { setError('Create or select a session in this workspace before sending a prompt.'); return }
     const mode = modeOverride ?? (/\b(explain|map|diagram)\b.*\b(codebase|architecture|project)\b/i.test(content) ? 'map' : 'chat')
+    const ticket = store.capture()
     try {
-      const result = await rpcClient.request<{ run_id: number }>('session.send', { session_id: activeSession.id, content, mode })
-      if (!contentOverride) setPrompt('')
-      setRunDiff(null); setShowMap(false); setMessages((current) => [...current, { role: 'user', content, run_id: result.run_id }])
-      setActiveSession((session) => ({ ...session, status: 'running', title: session.title || content.slice(0, 80) }))
-      setSessions((current) => current.map((session) => session.id === activeSession.id ? { ...session, status: 'running', title: session.title || content.slice(0, 80) } : session))
+      const result = await rpcClient.request('session.send', { session_id: activeSession.id, content, mode })
+      setSessions((current) => current.map(session => session.id === ticket.sessionId ? { ...session, title: session.title || content.slice(0, 80) } : session))
+      if (!store.addUser(ticket, content, result.run_id)) return
+      if (!contentOverride) setPrompt(current => current.trim() === content ? '' : current)
+      setRunDiff(null); setShowMap(false)
+      const status = store.getSnapshot().events.filter(event => event.run_id === result.run_id).map(eventStatus).filter(value => value !== null).at(-1) ?? 'running'
+      setActiveSession((session) => ({ ...session, status, title: session.title || content.slice(0, 80) }))
+      setSessions((current) => current.map((session) => session.id === ticket.sessionId ? { ...session, status, title: session.title || content.slice(0, 80) } : session))
       setError(null)
-    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'The prompt could not be sent.') }
+    } catch (requestError) { if (store.matches(ticket)) setError(requestError instanceof Error ? requestError.message : 'The prompt could not be sent.') }
   }
 
   const stopSession = async () => {
     if (isDemoMode) { unavailableInDemo(); return }
     if (!sessions.some((session) => session.id === activeSession.id)) return
-    try { await rpcClient.request('session.cancel', { session_id: activeSession.id }); setActiveSession((session) => ({ ...session, status: 'stopping' })) }
-    catch { setError('Could not stop the agent.') }
+    const ticket = store.capture()
+    try {
+      await rpcClient.request('session.cancel', { session_id: activeSession.id })
+      if (!store.matches(ticket)) return
+      setActiveSession(session => ['completed', 'failed', 'cancelled'].includes(session.status) ? session : { ...session, status: 'stopping' })
+    } catch { if (store.matches(ticket)) setError('Could not stop the agent.') }
   }
 
   const syncSession = async () => {
     if (isDemoMode) { unavailableInDemo(); return }
     if (!live || !currentSession.id) return
     setSyncing(true)
+    const ticket = store.beginHistory(true)
     try {
-      const history = await fetchFullHistory(currentSession.id)
-      setMessages(history.conversation); setEvents(history.events); setActiveSession(history.session)
-      setSessions((current) => current.map((session) => session.id === history.session.id ? history.session : session))
-      lastSequenceRef.current = history.last_sequence; setError(null)
-    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not synchronize the session.') }
+      const history = await fetchHistory(currentSession.id)
+      if (!store.applyHistory(ticket, history)) return
+      const status = store.getSnapshot().events.map(eventStatus).filter(value => value !== null).at(-1) ?? history.session.status
+      const session = { ...history.session, status }
+      setActiveSession(session)
+      setSessions((current) => current.map(item => item.id === session.id ? session : item))
+      setError(null)
+    } catch (requestError) { if (store.isCurrentHistory(ticket)) setError(requestError instanceof Error ? requestError.message : 'Could not synchronize the session.') }
     finally { setSyncing(false) }
   }
 
@@ -320,18 +345,21 @@ function App() {
   }
 
   const openRunDiff = async (runId: number) => {
+    const ticket = store.capture()
     try {
-      const diff = await rpcClient.request<RunDiff>('run.diff.get', { session_id: activeSession.id, run_id: runId })
-      setReviewDiff(diff)
-    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Could not load the saved diff.') }
+      const diff = await rpcClient.request('run.diff.get', { session_id: activeSession.id, run_id: runId })
+      if (store.matches(ticket)) setReviewDiff(diff)
+    } catch (requestError) { if (store.matches(ticket)) setError(requestError instanceof Error ? requestError.message : 'Could not load the saved diff.') }
   }
 
   const decideRunDiff = async (runId: number, action: 'accept' | 'revert') => {
     if (isDemoMode) { unavailableInDemo(); return }
-    const diff = await rpcClient.request<RunDiff>(`run.diff.${action}`, { session_id: activeSession.id, run_id: runId })
+    const ticket = store.capture()
+    const diff = await rpcClient.request(`run.diff.${action}`, { session_id: activeSession.id, run_id: runId })
+    if (!store.matches(ticket)) return
     setReviewDiff(diff)
     setRunDiff((current) => current?.run_id === runId ? diff : current)
-    if (action === 'revert') await refreshGitStatus()
+    if (action === 'revert') await refreshGitStatus(activeWorkspace)
   }
 
   const createEvalCaseFromRun = async (runId: number) => {
@@ -349,7 +377,7 @@ function App() {
     <main className="app-shell" onClick={() => { setWorkspaceMenuId(null); setSessionMenuId(null) }}>
       <AppHeader connection={connection} demo={isDemoMode} mode={productMode} onModeChange={setProductMode} onOpenSettings={() => setShowSettings(true)} />
 
-      {productMode === 'evals' ? <EvalsMode live={live} demo={isDemoMode} workspaces={workspaces} /> : <div className={`workspace-grid ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${showActivity ? '' : 'activity-hidden'}`}>
+      {productMode === 'evals' ? <EvalsMode live={live} demo={isDemoMode} workspaces={workspaces} onWorkspaceAdded={(workspace) => setWorkspaces((current) => [workspace, ...current.filter((item) => item.id !== workspace.id)])} /> : <div className={`workspace-grid ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${showActivity ? '' : 'activity-hidden'}`}>
         {!sidebarCollapsed && <WorkspaceSidebar workspaces={workspaces} sessions={groupedSessions} activeWorkspaceId={activeWorkspace.id} activeSessionId={activeSession.id} live={live} workspaceMenuId={workspaceMenuId} sessionMenuId={sessionMenuId} onWorkspaceMenuChange={setWorkspaceMenuId} onSessionMenuChange={setSessionMenuId} onAddWorkspace={() => void chooseWorkspace()} onSelectWorkspace={selectWorkspace} onRenameWorkspace={(workspace) => void renameWorkspace(workspace)} onRemoveWorkspace={(workspace) => void removeWorkspace(workspace)} onCreateSession={() => void createSession()} onSelectSession={selectSession} onDeleteSession={(session) => void deleteSession(session)} onCollapse={() => setSidebarCollapsed(true)} />}
 
         <ConversationPane workspace={activeWorkspace} session={currentSession} messages={messages} prompt={prompt} live={live} error={error} conversationScrollRef={conversationScrollRef} onPromptChange={setPrompt} onSend={() => void sendPrompt()} onMapCodebase={() => void sendPrompt('Explain this codebase and map its main components and data flow.', 'map')} onStop={() => void stopSession()} onDismissError={() => setError(null)} onAddWorkspace={() => void chooseWorkspace()} />

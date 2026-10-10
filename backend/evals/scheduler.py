@@ -271,6 +271,15 @@ class EvalScheduler:
         if task:
             await asyncio.shield(task)
 
+    async def shutdown(self) -> None:
+        # Cancel setup/scoring as well as agent phases before the runtime and
+        # database are closed. Interrupted experiments reconcile on startup.
+        tasks = tuple(self._tasks.values())
+        for task in tasks:
+            if not task.done() and not task.cancelling():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
     async def _run(self, experiment_id: int) -> None:
         final_status = "failed"
         async with self.session_factory() as db:
@@ -594,7 +603,7 @@ class EvalScheduler:
                                 ).encode()
                             )
                             stored = writer.finish()
-                        except OSError, RuntimeError, ValueError:
+                        except (OSError, RuntimeError, ValueError):
                             writer.abort()
                             raise
                         artifact = models.RunArtifact(
@@ -783,8 +792,8 @@ async def reconcile_eval_worktrees(
                 continue
             provisioned = ProvisionedWorktree(
                 attempt_id=attempt.id,
-                repository_path=Path(workspace.path).resolve(),
-                path=Path(attempt.worktree_path).resolve(),
+                repository_path=await asyncio.to_thread(Path(workspace.path).resolve),
+                path=await asyncio.to_thread(Path(attempt.worktree_path).resolve),
                 base_sha=revision.base_sha,
             )
             try:
@@ -795,7 +804,7 @@ async def reconcile_eval_worktrees(
         await db.commit()
     async with session_factory() as db:
         retained_paths = {
-            Path(path).resolve()
+            await asyncio.to_thread(Path(path).resolve)
             for path in (
                 await db.scalars(
                     select(models.EvalAttempt.worktree_path).where(

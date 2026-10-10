@@ -1,7 +1,7 @@
 [project]
-name = "backend"
+name = "agent-workbench-backend"
 version = "0.1.0"
-description = "Add your description here"
+description = "Local Agent Workbench API for persistent Codex chats and reproducible coding evaluations"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -27,3 +27,18 @@ packaging = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.ruff]
+# Code-style target keeps parenthesized multi-exception handlers readable.
+# Runtime and CI still require Python 3.14 (see requires-python above).
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "ASYNC", "UP", "SIM", "S", "BLE", "RUF100"]
+
+[tool.ruff.lint.per-file-ignores]
+# Disposable fixtures intentionally use assertions, fake secrets and Git/process tools.
+# S108: illustrative paths; ASYNC110: bounded polling of external child/file state.
+"tests/**" = ["S101", "S105", "S106", "S108", "S603", "S607", "ASYNC110", "ASYNC240"]
+# Operator-run verification scripts assert evidence and invoke selected local tools.
+"tools/**" = ["S101", "S603", "S607"]

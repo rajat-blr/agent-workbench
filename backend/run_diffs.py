@@ -27,8 +27,8 @@ MAX_TOTAL_COMPARE_BYTES = 20_000_000
 
 
 def _git(root: Path, *arguments: str) -> bytes:
-    process = subprocess.run(
-        ["git", "-C", str(root), "-c", "diff.autoRefreshIndex=false", *arguments],
+    process = subprocess.run(  # noqa: S603 - fixed Git command; argument-vector execution, never a shell.
+        ["git", "-C", str(root), "-c", "diff.autoRefreshIndex=false", *arguments],  # noqa: S607 - use the installed Git from PATH.
         capture_output=True,
         timeout=8,
         check=False,
@@ -141,8 +141,8 @@ def build_starting_patch(baseline: dict[str, Any], base_sha: str) -> bytes:
     repo = Path(baseline["repo"]).resolve()
     with tempfile.TemporaryDirectory(prefix="agent-workbench-case-") as temporary:
         checkout = (Path(temporary) / "checkout").resolve()
-        subprocess.run(
-            [
+        subprocess.run(  # noqa: S603 - fixed clone operation on the saved local baseline.
+            [  # noqa: S607 - use the installed Git from PATH.
                 "git",
                 "clone",
                 "--quiet",

@@ -15,12 +15,13 @@ import sys
 import tempfile
 import time
 import urllib.request
+from contextlib import suppress
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tools.import_t3_live import Rpc
-from tools.revise_t3_prompts import ROOT, revise_t3_cases
+from tools.eval_baselines import ROOT
+from tools.local_rpc import Rpc
 
 
 def wait_for(check, seconds=20):
@@ -77,7 +78,7 @@ def run_checks(executable: Path, database: Path, artifacts: Path, qa_app: Path |
                     f"Frozen backend exited: {process.returncode}; see {root / 'backend.log'}"
                 )
             try:
-                with urllib.request.urlopen(url + "/health", timeout=1) as response:
+                with urllib.request.urlopen(url + "/health", timeout=1) as response:  # noqa: S310 - URL is constructed from the fixture's numeric loopback port.
                     return response.status == 200
             except OSError:
                 return False
@@ -112,12 +113,6 @@ def run_checks(executable: Path, database: Path, artifacts: Path, qa_app: Path |
     }
     try:
         backend = start_backend()
-        record["scope_revisions"] = revise_t3_cases(
-            rpc, json.loads((ROOT / "evals/t3code/prompt-scope-v2.json").read_text())
-        )
-        record["historical_comparison"] = rpc(
-            "eval.experiment.get", {"experiment_id": 2}
-        )
         repository = root / "fixture"
         repository.mkdir()
         (repository / "README.md").write_text(
@@ -340,10 +335,8 @@ def run_checks(executable: Path, database: Path, artifacts: Path, qa_app: Path |
             backend.terminate()
             backend.wait(timeout=10)
         for pid in owned_agent_groups:
-            try:
+            with suppress(ProcessLookupError):
                 os.killpg(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
         log.close()
 
 

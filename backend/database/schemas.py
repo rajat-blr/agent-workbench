@@ -84,6 +84,10 @@ class WorkspaceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
 
+class WorkspaceCloneGithub(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+
+
 class WorkspaceIdParams(BaseModel):
     workspace_id: int = Field(gt=0)
 
@@ -94,6 +98,19 @@ class WorkspaceRename(WorkspaceIdParams):
 
 class GitCommitParams(WorkspaceIdParams):
     message: str = Field(min_length=1, max_length=500)
+    expected_branch: str = Field(min_length=1, max_length=255)
+    index_token: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class GitStageParams(WorkspaceIdParams):
+    paths: list[str] = Field(min_length=1, max_length=500)
+    expected_branch: str = Field(min_length=1, max_length=255)
+
+
+class GitPushParams(WorkspaceIdParams):
+    remote: str = Field(min_length=1, max_length=255)
+    branch: str = Field(min_length=1, max_length=255)
+    expected_branch: str = Field(min_length=1, max_length=255)
 
 
 class SessionCreate(BaseModel):

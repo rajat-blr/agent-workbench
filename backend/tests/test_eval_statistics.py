@@ -66,7 +66,7 @@ def test_wilson_interval_and_paired_summary() -> None:
     assert result["verdict"] == "configuration_b_better"
 
 
-def test_inference_requires_final_independent_case_pairs() -> None:
+def test_inference_requires_final_case_pairs_not_sample_index_zero() -> None:
     assert exact_mcnemar(0, 5) == 0.0625
     attempts = [
         {
@@ -85,9 +85,92 @@ def test_inference_requires_final_independent_case_pairs() -> None:
     repeated = summarize_results(
         [dict(row, sample_index=1) for row in attempts], [1, 2]
     )
-    assert repeated["verdict"] == "inconclusive"
-    assert repeated["paired"]["inference_available"] is False
+    assert repeated["verdict"] == "configuration_b_better"
+    assert repeated["paired"]["inference_available"] is True
     assert all(pair["category"] == "improved" for pair in partial["comparisons"])
+
+
+def test_repeating_one_case_does_not_create_independent_evidence():
+    attempts = [
+        {
+            "case_revision_id": 1,
+            "sample_index": sample,
+            "config_snapshot_id": config,
+            "outcome": "pass" if config == 2 else "fail",
+        }
+        for sample in range(100)
+        for config in (1, 2)
+    ]
+    result = summarize_results(attempts, [1, 2])
+    assert result["paired"]["case_count"] == 1
+    assert result["paired"]["sample_count"] == 100
+    assert result["paired"]["p_value"] is None
+    assert result["verdict"] == "inconclusive"
+    assert result["configurations"][0]["confidence_low"] is None
+
+
+def test_equal_case_weights_and_bootstrap_do_not_treat_attempts_as_independent():
+    attempts = [
+        {
+            "case_revision_id": 1,
+            "sample_index": sample,
+            "config_snapshot_id": 1,
+            "outcome": "pass",
+        }
+        for sample in range(99)
+    ] + [
+        {
+            "case_revision_id": 2,
+            "sample_index": 0,
+            "config_snapshot_id": 1,
+            "outcome": "fail",
+        }
+    ]
+    config = summarize_results(attempts, [1])["configurations"][0]
+    assert config["pass_rate"] == 0.5
+    assert config["attempt_pass_rate"] == 0.99
+    assert config["case_count"] == 2
+    assert config["confidence_low"] == 0
+    assert config["confidence_high"] == 1
+
+
+def test_five_cases_cannot_become_significant_by_repeating_samples():
+    rows = [
+        {
+            "case_revision_id": case,
+            "sample_index": sample,
+            "config_snapshot_id": config,
+            "outcome": "pass" if config == 2 else "fail",
+        }
+        for case in range(5)
+        for sample in range(10)
+        for config in (1, 2)
+    ]
+    result = summarize_results(rows, [1, 2])
+    assert result["paired"]["p_value"] == 0.0625
+    assert result["verdict"] == "inconclusive"
+    assert result["paired"]["case_count"] == 5
+
+
+def test_paired_case_rates_use_only_matched_evaluable_samples():
+    rows = [
+        {
+            "case_revision_id": 1,
+            "sample_index": sample,
+            "config_snapshot_id": config,
+            "outcome": outcome,
+        }
+        for sample, config, outcome in [
+            (0, 1, "fail"),
+            (0, 2, "pass"),
+            (1, 1, "pass"),
+            (1, 2, "timeout"),
+        ]
+    ]
+    result = summarize_results(rows, [1, 2])
+    assert result["paired"]["case_comparisons"][0]["difference"] == 1
+    assert result["paired"]["case_comparisons"][0]["paired_samples"] == 1
+    assert result["configurations"][1]["case_pass_rates"][0]["excluded"] == 1
 
 
 def test_usage_and_metrics_distinguish_unknown_from_zero() -> None:

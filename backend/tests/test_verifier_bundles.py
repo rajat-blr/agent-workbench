@@ -9,7 +9,13 @@ from evals.worktrees import WorktreeError
 
 @pytest.mark.parametrize(
     "path",
-    ["../secret.txt", "/absolute.txt", "tests/../secret.txt", ".git/config", "tests//hidden.py"],
+    [
+        "../secret.txt",
+        "/absolute.txt",
+        "tests/../secret.txt",
+        ".git/config",
+        "tests//hidden.py",
+    ],
 )
 def test_verifier_bundle_rejects_unsafe_paths(path) -> None:
     with pytest.raises(ValueError, match="Unsafe held-out verifier path"):
@@ -22,9 +28,7 @@ def test_verifier_bundle_does_not_overwrite_existing_or_escaped_files(tmp_path) 
     target = worktree / "tests" / "hidden.py"
     target.parent.mkdir()
     target.write_text("visible to agent")
-    bundle = build_verifier_bundle(
-        [{"path": "tests/hidden.py", "content": "held out"}]
-    )
+    bundle = build_verifier_bundle([{"path": "tests/hidden.py", "content": "held out"}])
     with pytest.raises(WorktreeError, match="already agent-visible"):
         materialize_verifier_bundle(bundle, worktree)
     assert target.read_text() == "visible to agent"

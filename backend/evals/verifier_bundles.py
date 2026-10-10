@@ -70,7 +70,9 @@ def parse_verifier_bundle(content: bytes) -> list[tuple[PurePosixPath, bytes]]:
             if path.as_posix() in seen:
                 raise ValueError
             seen.add(path.as_posix())
-            files.append((path, base64.b64decode(item["content_base64"], validate=True)))
+            files.append(
+                (path, base64.b64decode(item["content_base64"], validate=True))
+            )
     except (KeyError, TypeError, ValueError, UnicodeError, binascii.Error) as exc:
         raise WorktreeError("Verifier bundle is invalid") from exc
     if len(files) > MAX_VERIFIER_FILES:

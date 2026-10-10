@@ -86,8 +86,10 @@
 
 .sidebar, .activity-panel { background: rgba(19, 22, 24, .76); }
 .sidebar { display: flex; flex-direction: column; min-height: 0; padding: 25px 14px 16px; border-right: 1px solid var(--border); }
-.sidebar-heading { display: flex; justify-content: space-between; align-items: center; padding: 0 10px 10px; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
-.workspace-list, .session-list { display: grid; gap: 3px; }
+.sidebar-heading { display: flex; flex: 0 0 auto; justify-content: space-between; align-items: center; padding: 0 10px 10px; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.workspace-list, .session-list { display: grid; align-content: start; gap: 3px; min-height: 0; overflow-y: auto; scrollbar-width: thin; }
+.workspace-list { flex: 0 1 auto; max-height: 35%; }
+.session-list { flex: 1 1 0; }
 .nav-row-wrap { position: relative; min-width: 0; }
 .workspace-row, .session-row { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 10px; color: var(--muted); background: transparent; border-radius: 5px; text-align: left; }
 .workspace-row:hover, .session-row:hover, .workspace-row.selected, .session-row.selected { color: var(--text); background: var(--panel-raised); }
@@ -116,7 +118,7 @@
 .session-copy { display: grid; gap: 5px; min-width: 0; }
 .session-copy strong { overflow: hidden; color: inherit; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .session-copy small { color: var(--faint); font-family: var(--mono); font-size: 10px; }
-.sidebar-footer { display: grid; gap: 5px; margin-top: auto; padding: 12px 2px 0; border-top: 1px solid var(--border-soft); }
+.sidebar-footer { display: grid; flex: 0 0 auto; gap: 5px; margin-top: auto; padding: 12px 2px 0; border-top: 1px solid var(--border-soft); }
 .footer-link { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 8px; color: var(--muted); background: transparent; border-radius: 4px; font-size: 11px; text-align: left; }
 .footer-link:hover { color: var(--text); background: var(--panel-raised); }.footer-link span { overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
 .footer-link svg:last-child { margin-left: auto; }
@@ -176,6 +178,15 @@ h1 { margin: 12px 0 7px; color: var(--text); font-size: 25px; letter-spacing: -.
 .diff-modal-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; line-height: 1.5; }.diff-review-actions { display: flex; flex: 0 0 auto; gap: 8px; }.diff-review-actions button { padding: 7px 10px; border: 1px solid var(--border); border-radius: 4px; color: var(--text); background: var(--panel-raised); font-size: 10px; }.diff-review-actions button:last-child { border-color: #466052; color: var(--mint); }.diff-review-actions button:disabled { cursor: not-allowed; opacity: .45; }
 .git-action-buttons { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; margin-top: 11px; }.git-action-buttons button { min-width: 0; padding: 8px 4px; border: 1px solid var(--border); border-radius: 4px; color: var(--text); background: var(--panel-raised); font-size: 9px; white-space: nowrap; }.git-action-buttons button:last-child { border-color: #466052; color: var(--mint); }.git-action-buttons button:hover:not(:disabled) { border-color: var(--mint); }.git-action-buttons button:disabled { cursor: not-allowed; opacity: .4; }.git-action-feedback { max-height: 90px; overflow: auto; margin: 10px 0 0; color: var(--mint); font-family: var(--mono); font-size: 9px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }.work-section p.git-action-error { margin-top: 10px; color: var(--red); overflow-wrap: anywhere; }
 .git-commit-modal { width: min(420px, 100%); padding: 21px; border: 1px solid var(--border); border-radius: 9px; background: #191c1f; box-shadow: 0 24px 70px rgba(0,0,0,.5); }.git-commit-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 22px; }.git-commit-header h2 { margin: 8px 0 0; font-size: 18px; }.git-commit-modal label { display: block; margin-bottom: 8px; color: var(--muted); font-size: 11px; }.git-commit-modal input { width: 100%; padding: 10px 11px; border: 1px solid var(--border); border-radius: 5px; outline: none; color: var(--text); background: var(--panel-raised); font-size: 12px; }.git-commit-modal input:focus { border-color: var(--mint); }.git-commit-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }.git-commit-footer button { padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; color: var(--text); background: var(--panel-raised); font-size: 10px; }.git-commit-footer button:last-child { border-color: var(--mint); color: #102019; background: var(--mint); }.git-commit-footer button:disabled { opacity: .5; cursor: not-allowed; }
+.git-review-modal { width: min(560px, calc(100vw - 40px)); max-height: calc(100vh - 60px); overflow-y: auto; }
+.git-review-modal p { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.git-review-files { max-height: 280px; overflow-y: auto; margin: 14px 0; border: 1px solid var(--border); border-radius: 5px; padding: 10px; }
+.git-review-modal .git-review-file { display: flex; align-items: flex-start; gap: 9px; margin: 0; padding: 8px 0; }
+.git-review-modal .git-review-file input { width: 16px; flex: 0 0 16px; margin: 2px 0 0; accent-color: var(--mint); }
+.git-review-file span { min-width: 0; }
+.git-review-file code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); font-size: 12px; }
+.git-review-file small { display: block; white-space: pre-wrap; margin-top: 4px; color: var(--muted); }
+.git-review-modal select { width: 100%; padding: 10px; margin-bottom: 14px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel-raised); color: var(--text); }
 .verdict-context { color: var(--muted); font-size: 11px; line-height: 1.6; }
 .matrix-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; margin: 18px 0; color: var(--muted); font-size: 11px; }
 .matrix-filters label { display: flex; align-items: center; gap: 8px; }
@@ -190,3 +201,66 @@ h1 { margin: 12px 0 7px; color: var(--text); font-size: 25px; letter-spacing: -.
 .config-warning { color: var(--amber); font-size: 10px; line-height: 1.5; }
 .captured-instruction { max-width: 900px; max-height: 240px; overflow: auto; padding: 10px; color: var(--muted); background: #111416; font-size: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .evals-demo-notice { max-width: 1100px; margin: 0 auto 20px; padding: 12px 16px; border: 1px solid var(--border); border-radius: 6px; color: var(--amber); font-size: 11px; line-height: 1.6; }
+
+.eval-guide-steps { display: flex; gap: 24px; max-width: 720px; margin: 0 auto 24px; padding: 0; list-style: none; }
+.eval-guide-steps li { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 12px; }
+.eval-guide-steps li > span { display: grid; place-items: center; width: 27px; height: 27px; border: 1px solid var(--border); border-radius: 50%; }
+.eval-guide-steps .current, .eval-guide-steps .complete { color: var(--mint); }
+.eval-guide-steps .current > span { border-color: var(--mint); background: rgba(80, 111, 94, .18); }
+.eval-guide-card fieldset { display: grid; gap: 18px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.eval-guide-card h2 { color: var(--text); }
+.eval-guide-note { margin: 0; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.7; }
+.eval-guide-card .evals-error { width: 100%; margin: 0; white-space: pre-wrap; }
+.eval-guide-card details { padding: 14px 0; border-top: 1px solid var(--border-soft); }
+.eval-guide-card summary, .eval-advanced-launch > summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+.eval-guide-card details[open] > summary { margin-bottom: 16px; }
+.eval-guide-efforts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.eval-guide-efforts label { display: flex; align-items: center; gap: 8px; padding: 15px 10px; border: 1px solid var(--border); border-radius: 6px; }
+.eval-guide-efforts label.selected { border-color: var(--mint); color: var(--text); background: rgba(80, 111, 94, .12); }
+.eval-guide-efforts input { width: auto; accent-color: var(--mint); }
+.eval-guide-summary { display: grid; gap: 16px; margin: 0; }
+.eval-guide-summary > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 15px; font-size: 12px; }
+.eval-guide-summary dt { color: var(--muted); }
+.eval-guide-summary dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+.eval-advanced-launch { max-width: 1100px; margin: 0 auto 22px; }
+.eval-advanced-launch > summary { padding: 12px 0; }
+@media (max-width: 900px) { .eval-guide-steps { gap: 12px; flex-wrap: wrap; } .eval-guide-efforts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.eval-repository-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; max-width: 1100px; margin: 0 auto 24px; }
+.eval-repository-toolbar button { display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0; }
+.eval-repository-import { margin-bottom: 32px; }
+.eval-repository-import .evals-error { margin: 0; white-space: pre-wrap; }
+.eval-score-charts, .eval-case-review, .eval-comparison { margin: 22px 0; padding: 22px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+.eval-result-caveats > summary, .eval-detailed-statistics > summary { padding: 12px 0; color: var(--muted); font-size: 12px; cursor: pointer; }
+.eval-score-charts h3, .eval-case-review h3, .eval-comparison h3 { margin: 0 0 10px; font-size: 15px; }
+.eval-score-charts p, .eval-case-review p, .eval-comparison p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.eval-chart-row { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(120px, 3fr) 65px; align-items: center; gap: 14px; margin: 22px 0; font-size: 12px; }
+.eval-chart-row small { grid-column: 2 / -1; color: var(--muted); }
+.eval-bar-track { height: 18px; overflow: hidden; border-radius: 4px; background: var(--border); }
+.eval-bar-track > span { display: block; height: 100%; background: var(--mint); }
+.eval-duration-bar > span { background: #94abd1; }
+.eval-review-table-scroll { overflow-x: auto; }
+.eval-review-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.eval-review-table th, .eval-review-table td { padding: 14px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.eval-review-table th { min-width: 140px; }
+.eval-review-table small, .eval-outcome-button small { display: block; margin-top: 7px; color: var(--muted); font-size: 10px; font-weight: normal; }
+.eval-outcome-button { width: 100%; min-width: 130px; padding: 12px; border: 1px solid var(--border); border-left: 3px solid var(--amber); border-radius: 5px; color: var(--text); background: var(--panel-raised); text-align: left; text-transform: capitalize; }
+.eval-outcome-button.pass { border-left-color: var(--mint); }
+.eval-outcome-button.fail { border-left-color: var(--red); }
+.eval-outcome-button:hover { border-color: var(--mint); }
+.eval-review-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0; }
+.eval-review-tabs button { padding: 10px 16px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); background: var(--panel-raised); }
+.eval-review-tabs button[aria-pressed="true"] { border-color: var(--mint); color: var(--mint); }
+.eval-comparison-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 18px; }
+.eval-comparison-columns > article { min-width: 0; padding: 18px; border: 1px solid var(--border); border-radius: 6px; }
+.eval-comparison-columns header { min-height: 110px; }
+.eval-comparison pre, .eval-trace-view pre { max-height: 420px; overflow: auto; padding: 14px; border: 1px solid var(--border); border-radius: 5px; background: #121619; color: var(--text); font-size: 11px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.eval-comparison .eval-patch { white-space: pre; overflow-wrap: normal; }
+.eval-score-row { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.eval-score-row.fail > strong { color: var(--red); }
+.eval-timeline { list-style: none; padding: 0; margin: 16px 0 24px 12px; border-left: 2px solid var(--border); }
+.eval-timeline li { padding: 10px 0 10px 16px; }
+.eval-timeline summary { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; cursor: pointer; font-size: 12px; }
+.eval-timeline summary > span:last-child { color: var(--muted); font-size: 10px; }
+.trace-number { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--mint); border-radius: 50%; color: var(--mint); }
+.eval-timeline .fail .trace-number, .eval-timeline .failed .trace-number { border-color: var(--red); color: var(--red); }
+@media (max-width: 800px) { .eval-chart-row { grid-template-columns: 1fr 60px; }.eval-chart-row > strong { grid-column: 1 / -1; }.eval-chart-row small { grid-column: 1 / -1; }.eval-case-review .results-heading { flex-direction: column; }.eval-score-charts, .eval-case-review, .eval-comparison { padding: 14px; } }

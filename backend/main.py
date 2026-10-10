@@ -1,12 +1,9 @@
 import asyncio
 import json
 import os
-import re
 import secrets
-import subprocess
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from fastapi import (
@@ -19,7 +16,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,25 +26,8 @@ from artifacts import ArtifactStore, StoredArtifact
 from database import SessionLocal, engine, get_db, models
 from database.migrations import run_migrations
 from database.schemas import (
-    GitCommitParams,
-    MessageRecord,
     RpcRequest,
     RunArtifactRecord,
-    RunDiffParams,
-    RunEventRecord,
-    RunEventsParams,
-    RunIdParams,
-    RunRecord,
-    SessionCreate,
-    SessionHistoryParams,
-    SessionHistoryRecord,
-    SessionIdParams,
-    SessionRecord,
-    SessionSend,
-    WorkspaceCreate,
-    WorkspaceIdParams,
-    WorkspaceRecord,
-    WorkspaceRename,
 )
 from evals.scheduler import (
     EvalScheduler,
@@ -58,20 +38,15 @@ from evals.service import EvalService, EvalServiceError
 from evals.worktrees import WorktreeService
 from event_broker import AgentEvent, EventBroker
 from event_payloads import event_payload_preview
+from rpc_contract import RESULT_ADAPTERS, RPC_METHODS
+from rpc_handlers.common import RpcMethodError
+from rpc_handlers.health import HealthHandlers
+from rpc_handlers.run import RunHandlers
+from rpc_handlers.session import SessionHandlers
+from rpc_handlers.workspace import WorkspaceHandlers
+from rpc_registry import bind_handlers
 from run_diffs import RunDiffService
 from settings import settings
-
-
-def _workspace_dict(workspace: models.Workspace) -> dict[str, Any]:
-    return WorkspaceRecord.model_validate(workspace).model_dump(mode="json")
-
-
-def _session_dict(session: models.Session) -> dict[str, Any]:
-    return SessionRecord.model_validate(session).model_dump(mode="json")
-
-
-def _run_dict(run: models.Run) -> dict[str, Any]:
-    return RunRecord.model_validate(run).model_dump(mode="json")
 
 
 def _rpc_result(request_id: int | str | None, result: Any) -> dict[str, Any]:
@@ -87,105 +62,7 @@ def _rpc_error(
     return {"jsonrpc": "2.0", "id": request_id, "error": error}
 
 
-def _resolve_workspace(path: str) -> str:
-    resolved = Path(path).expanduser().resolve()
-    if not resolved.is_dir():
-        raise ValueError("Workspace path must be an existing directory")
-    return str(resolved)
-
-
-async def _git_status(path: str) -> dict[str, Any]:
-    async def run(*arguments: str) -> tuple[int, str]:
-        try:
-            process = await asyncio.create_subprocess_exec(
-                "git",
-                "-C",
-                path,
-                *arguments,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-        except FileNotFoundError:
-            return 1, ""
-        try:
-            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=4)
-        except TimeoutError:
-            process.kill()
-            await process.communicate()
-            return 1, ""
-        return process.returncode or 0, stdout.decode(errors="replace").rstrip("\n")
-
-    return_code, _ = await run("rev-parse", "--is-inside-work-tree")
-    if return_code:
-        return {
-            "is_repository": False,
-            "is_root": False,
-            "branch": None,
-            "dirty_count": 0,
-            "staged_count": 0,
-            "unstaged_count": 0,
-        }
-    _, repo_root = await run("rev-parse", "--show-toplevel")
-    _, branch = await run("branch", "--show-current")
-    if not branch:
-        _, branch = await run("rev-parse", "--short", "HEAD")
-    _, changes = await run("status", "--porcelain")
-    changed_lines = changes.splitlines() if changes else []
-    return {
-        "is_repository": True,
-        "is_root": Path(repo_root).resolve() == Path(path).resolve(),
-        "branch": branch or "unknown",
-        "dirty_count": len(changed_lines),
-        "staged_count": sum(
-            line[0] not in {" ", "?"} for line in changed_lines if line
-        ),
-        "unstaged_count": sum(
-            line[:2] == "??" or (len(line) > 1 and line[1] != " ")
-            for line in changed_lines
-            if line
-        ),
-    }
-
-
-async def _run_git_action(path: str, *arguments: str) -> str:
-    environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
-    try:
-        process = await asyncio.create_subprocess_exec(
-            "git",
-            "-C",
-            path,
-            *arguments,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=environment,
-        )
-    except FileNotFoundError as exc:
-        raise RpcMethodError(-32030, "Git is not installed") from exc
-    try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
-    except TimeoutError as exc:
-        process.kill()
-        await process.communicate()
-        raise RpcMethodError(-32030, "Git command timed out") from exc
-    output = (stdout + b"\n" + stderr).decode(errors="replace").strip()
-    output = re.sub(r"(https?://)[^\s/@]+:[^\s/@]+@", r"\1***@", output)[:1500]
-    if process.returncode:
-        raise RpcMethodError(-32030, output or "Git command failed")
-    return output
-
-
-def _params(model: type[BaseModel], values: dict[str, Any]) -> BaseModel:
-    return model.model_validate(values)
-
-
-class RpcMethodError(Exception):
-    def __init__(self, code: int, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-
-
-class RpcDispatcher:
+class RpcDispatcher(HealthHandlers, WorkspaceHandlers, SessionHandlers, RunHandlers):
     def __init__(
         self,
         runtime: AgentRuntimeManager,
@@ -213,14 +90,25 @@ class RpcDispatcher:
             artifact_store,
             cli_command=settings.codex_command,
         )
+        self._repository_import_locks: dict[str, asyncio.Lock] = {}
         self._workspace_locks: dict[int, asyncio.Lock] = {}
+        self._rpc_handlers = bind_handlers(self)
 
     async def dispatch(self, request: RpcRequest, db: AsyncSession) -> dict[str, Any]:
         try:
-            return _rpc_result(
-                request.id,
-                await self._dispatch_method(request.method, request.params, db),
-            )
+            contract = RPC_METHODS.get(request.method)
+            if contract is None:
+                raise NotImplementedError(f"Unknown method: {request.method}")
+            contract.params.model_validate(request.params)
+            result = await self._dispatch_method(request.method, request.params, db)
+            try:
+                RESULT_ADAPTERS[request.method].validate_json(
+                    json.dumps(result), strict=True
+                )
+            except (ValidationError, TypeError):
+                # Response bugs are internal errors, never invalid client input.
+                raise RpcMethodError(-32603, "Response contract mismatch") from None
+            return _rpc_result(request.id, result)
         except ValidationError as exc:
             return _rpc_error(
                 request.id, -32602, "Invalid method parameters", exc.errors()
@@ -238,7 +126,7 @@ class RpcDispatcher:
             )
         except NotImplementedError as exc:
             return _rpc_error(request.id, -32601, str(exc))
-        except OSError, RuntimeError, SQLAlchemyError:
+        except (OSError, RuntimeError, SQLAlchemyError):
             await db.rollback()
             return _rpc_error(request.id, -32603, "Internal server error")
 
@@ -277,373 +165,15 @@ class RpcDispatcher:
     ) -> Any:
         if method.startswith("eval."):
             return await self.eval_service.dispatch(method, params, db)
-        if method == "health.check":
-            await db.execute(text("SELECT 1"))
-            return {"status": "ok"}
-        if method == "workspace.create":
-            values = _params(WorkspaceCreate, params)
-            if not values.name.strip():
-                raise ValueError("Workspace name is required")
-            workspace = models.Workspace(
-                path=_resolve_workspace(values.path), name=values.name.strip()
-            )
-            db.add(workspace)
-            await db.commit()
-            await db.refresh(workspace)
-            return _workspace_dict(workspace)
-        if method == "workspace.list":
-            workspaces = (
-                await db.scalars(
-                    select(models.Workspace).order_by(models.Workspace.name)
-                )
-            ).all()
-            return [_workspace_dict(workspace) for workspace in workspaces]
-        if method == "workspace.get":
-            values = _params(WorkspaceIdParams, params)
-            return _workspace_dict(await self._workspace(db, values.workspace_id))
-        if method == "workspace.rename":
-            values = _params(WorkspaceRename, params)
-            if not values.name.strip():
-                raise ValueError("Workspace name is required")
-            workspace = await self._workspace(db, values.workspace_id)
-            workspace.name = values.name.strip()
-            await db.commit()
-            await db.refresh(workspace)
-            return _workspace_dict(workspace)
-        if method == "workspace.git_status":
-            values = _params(WorkspaceIdParams, params)
-            workspace = await self._workspace(db, values.workspace_id)
-            return await _git_status(workspace.path)
-        if method in {
-            "workspace.git_stage",
-            "workspace.git_commit",
-            "workspace.git_push_main",
-        }:
-            values = _params(
-                GitCommitParams
-                if method == "workspace.git_commit"
-                else WorkspaceIdParams,
-                params,
-            )
-            workspace = await self._workspace(db, values.workspace_id)
-            async with self._workspace_locks.setdefault(workspace.id, asyncio.Lock()):
-                await db.rollback()
-                workspace = await self._workspace(db, values.workspace_id)
-                if await self._has_active_run(db, workspace_id=workspace.id):
-                    raise RpcMethodError(
-                        -32010, "Wait for the active run to finish before using Git"
-                    )
-                status = await _git_status(workspace.path)
-                if not status["is_repository"]:
-                    raise RpcMethodError(
-                        -32030, "This workspace is not a Git repository"
-                    )
-                if not status["is_root"]:
-                    raise RpcMethodError(
-                        -32030,
-                        "Select the repository root as the workspace to use Git actions",
-                    )
-                if status["branch"] != "main":
-                    raise RpcMethodError(
-                        -32030, "Switch to the main branch before using Git actions"
-                    )
-                if method == "workspace.git_stage":
-                    output = await _run_git_action(workspace.path, "add", ".")
-                    action = "staged"
-                elif method == "workspace.git_commit":
-                    message = values.message.strip()
-                    if not message:
-                        raise ValueError("Commit message is required")
-                    if not status["staged_count"]:
-                        raise RpcMethodError(-32030, "Stage changes before committing")
-                    output = await _run_git_action(
-                        workspace.path, "commit", "-m", message
-                    )
-                    action = "committed"
-                else:
-                    output = await _run_git_action(
-                        workspace.path, "push", "-u", "origin", "main"
-                    )
-                    action = "pushed"
-                return {
-                    "action": action,
-                    "output": output,
-                    "status": await _git_status(workspace.path),
-                }
-        if method == "workspace.delete":
-            values = _params(WorkspaceIdParams, params)
-            workspace = await self._workspace(db, values.workspace_id)
-            if await self._has_active_run(db, workspace_id=workspace.id):
-                raise RpcMethodError(
-                    -32010, "Stop active sessions before removing this workspace"
-                )
-            await db.delete(workspace)
-            await db.commit()
-            return {"deleted": True, "workspace_id": values.workspace_id}
-        if method == "session.create":
-            values = _params(SessionCreate, params)
-            workspace = await db.get(models.Workspace, values.workspace_id)
-            if not workspace:
-                raise RpcMethodError(-32004, "Workspace not found")
-            session = models.Session(workspace_id=workspace.id, provider="codex")
-            db.add(session)
-            await db.commit()
-            await db.refresh(session)
-            return _session_dict(session)
-        if method == "session.list":
-            query = (
-                select(models.Session)
-                .order_by(models.Session.updated_at.desc())
-                .limit(500)
-            )
-            if params.get("workspace_id") is not None:
-                query = query.where(
-                    models.Session.workspace_id == int(params["workspace_id"])
-                )
-            sessions = (await db.scalars(query)).all()
-            return [_session_dict(session) for session in sessions]
-        if method == "session.get":
-            values = _params(SessionIdParams, params)
-            return _session_dict(await self._session(db, values.session_id))
-        if method == "session.delete":
-            values = _params(SessionIdParams, params)
-            session = await self._session(db, values.session_id)
-            if await self._has_active_run(db, session_id=session.id):
-                raise RpcMethodError(
-                    -32010, "Stop the active run before deleting this session"
-                )
-            await db.delete(session)
-            await db.commit()
-            return {"deleted": True, "session_id": values.session_id}
-        if method == "session.history":
-            values = _params(SessionHistoryParams, params)
-            session = await self._session(db, values.session_id)
-            messages = (
-                await db.scalars(
-                    select(models.Message)
-                    .where(models.Message.session_id == session.id)
-                    .order_by(models.Message.id)
-                )
-            ).all()
-            events = (
-                await db.scalars(
-                    select(models.RunEvent)
-                    .where(
-                        models.RunEvent.session_id == session.id,
-                        models.RunEvent.id > values.after_sequence,
-                    )
-                    .order_by(models.RunEvent.id)
-                    .limit(values.limit + 1)
-                )
-            ).all()
-            has_more = len(events) > values.limit
-            events = events[: values.limit]
-            return SessionHistoryRecord(
-                session=SessionRecord.model_validate(session),
-                conversation=[
-                    MessageRecord.model_validate(message) for message in messages
-                ],
-                events=[
-                    RunEventRecord(
-                        id=event.id,
-                        run_id=event.run_id,
-                        sequence=event.id,
-                        type=event.event_type,
-                        payload=event.payload,
-                        created_at=event.created_at,
-                    )
-                    for event in events
-                ],
-                last_sequence=events[-1].id if events else values.after_sequence,
-                has_more=has_more,
-            ).model_dump(mode="json")
-        if method == "run.get":
-            values = _params(RunIdParams, params)
-            run = await db.get(models.Run, values.run_id)
-            if not run:
-                raise RpcMethodError(-32004, "Run not found")
-            return _run_dict(run)
-        if method == "run.events":
-            values = _params(RunEventsParams, params)
-            run = await db.get(models.Run, values.run_id)
-            if not run:
-                raise RpcMethodError(-32004, "Run not found")
-            events = (
-                await db.scalars(
-                    select(models.RunEvent)
-                    .where(
-                        models.RunEvent.run_id == run.id,
-                        models.RunEvent.id > values.after_sequence,
-                    )
-                    .order_by(models.RunEvent.id)
-                    .limit(values.limit + 1)
-                )
-            ).all()
-            has_more = len(events) > values.limit
-            events = events[: values.limit]
-            return {
-                "run": _run_dict(run),
-                "events": [
-                    RunEventRecord(
-                        id=event.id,
-                        run_id=event.run_id,
-                        sequence=event.id,
-                        type=event.event_type,
-                        payload=event.payload,
-                        created_at=event.created_at,
-                    ).model_dump(mode="json")
-                    for event in events
-                ],
-                "last_sequence": events[-1].id if events else values.after_sequence,
-                "has_more": has_more,
-            }
-        if method == "run.artifacts":
-            values = _params(RunIdParams, params)
-            run = await db.get(models.Run, values.run_id)
-            if not run:
-                raise RpcMethodError(-32004, "Run not found")
-            artifacts = (
-                await db.scalars(
-                    select(models.RunArtifact)
-                    .where(models.RunArtifact.run_id == run.id)
-                    .order_by(models.RunArtifact.id)
-                )
-            ).all()
-            return [
-                RunArtifactRecord.model_validate(artifact).model_dump(mode="json")
-                for artifact in artifacts
-            ]
-        if method == "run.diff.get":
-            values = _params(RunDiffParams, params)
-            run = await db.get(models.Run, values.run_id)
-            if not run or run.session_id != values.session_id:
-                raise RpcMethodError(-32004, "Run not found in this session")
-            if not self.diff_service:
-                raise RpcMethodError(-32011, "Diff service is unavailable")
-            await self.diff_service.refresh(
-                run.id, final=run.status not in {"queued", "running", "stopping"}
-            )
-            result = await self.diff_service.get(run.id)
-            return result or {
-                "run_id": run.id,
-                "status": "unavailable",
-                "final": True,
-                "reason": "A diff was not captured for this earlier run",
-                "files": [],
-                "file_count": 0,
-                "added": 0,
-                "deleted": 0,
-                "captured_at": None,
-            }
-        if method in {"run.diff.accept", "run.diff.revert"}:
-            values = _params(RunDiffParams, params)
-            run = await db.get(models.Run, values.run_id)
-            if not run or run.session_id != values.session_id:
-                raise RpcMethodError(-32004, "Run not found in this session")
-            if not self.diff_service:
-                raise RpcMethodError(-32011, "Diff service is unavailable")
-            session = await self._session(db, values.session_id)
-            workspace_id = session.workspace_id
-            async with self._workspace_locks.setdefault(workspace_id, asyncio.Lock()):
-                await db.rollback()
-                if await self._has_active_run(db, workspace_id=workspace_id):
-                    raise RpcMethodError(
-                        -32010,
-                        "Wait for the active run to finish before reviewing changes",
-                    )
-                try:
-                    result = await self.diff_service.decide(
-                        values.run_id,
-                        "accept" if method.endswith("accept") else "revert",
-                    )
-                except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-                    raise RpcMethodError(-32012, str(exc)[:300]) from exc
-                if not result:
-                    raise RpcMethodError(-32004, "No review was captured for this run")
-                return result
-        if method == "session.send":
-            values = _params(SessionSend, params)
-            content = values.content.strip()
-            if not content:
-                raise ValueError("Message content is required")
-            session = await self._session(db, values.session_id)
-            workspace = await db.get(models.Workspace, session.workspace_id)
-            if not workspace:
-                raise RpcMethodError(-32004, "Workspace not found")
-            async with self._workspace_locks.setdefault(workspace.id, asyncio.Lock()):
-                # The initial lookup may predate another run that held this lock.
-                await db.rollback()
-                session = await self._session(db, values.session_id)
-                workspace = await self._workspace(db, session.workspace_id)
-                if await self._has_active_run(db, workspace_id=workspace.id):
-                    raise RpcMethodError(
-                        -32010, "Another run is active in this workspace"
-                    )
-                run = models.Run(
-                    kind="chat",
-                    session_id=session.id,
-                    workspace_path=workspace.path,
-                    status="queued",
-                    prompt=content,
-                )
-                db.add(run)
-                await db.flush()
-                db.add(
-                    models.Message(
-                        session_id=session.id,
-                        run_id=run.id,
-                        role="user",
-                        content=content,
-                    )
-                )
-                session.status = "running"
-                if not session.title:
-                    session.title = content[:80]
-                await db.commit()
-                if self.diff_service:
-                    await self.diff_service.capture(run.id, workspace.path)
-                try:
-                    await self.runtime.start(
-                        session.id,
-                        run.id,
-                        workspace.path,
-                        content,
-                        session.codex_thread_id,
-                        mode=values.mode,
-                    )
-                except Exception as exc:
-                    await mark_run_start_failed(session.id, run.id, str(exc))
-                    if self.diff_service:
-                        await self.diff_service.refresh(run.id, final=True)
-                    if isinstance(exc, RuntimeError) and str(exc).startswith(
-                        "Codex CLI"
-                    ):
-                        raise RpcMethodError(-32020, str(exc)) from exc
-                    raise RpcMethodError(-32020, "Codex could not be started") from exc
-                return {"accepted": True, "session_id": session.id, "run_id": run.id}
-        if method in {"session.cancel", "session.stop"}:
-            values = _params(SessionIdParams, params)
-            await self._session(db, values.session_id)
-            active_run_id = await db.scalar(
-                select(models.Run.id)
-                .where(
-                    models.Run.session_id == values.session_id,
-                    models.Run.status.in_(("queued", "running", "stopping")),
-                )
-                .order_by(models.Run.id.desc())
-                .limit(1)
-            )
-            if active_run_id is None or not await self.runtime.cancel(active_run_id):
-                raise RpcMethodError(-32011, "No active run exists for this session")
-            return {"accepted": True, "session_id": values.session_id}
-        if method in {"session.subscribe", "session.unsubscribe"}:
-            values = _params(SessionIdParams, params)
-            await self._session(db, values.session_id)
-            return {
-                "session_id": values.session_id,
-                "subscribed": method == "session.subscribe",
-            }
-        raise NotImplementedError(f"Unknown method: {method}")
+        handler = self._rpc_handlers.get(method)
+        if handler is None:
+            raise NotImplementedError(f"Unknown method: {method}")
+        return await handler(method, params, db)
+
+    async def _mark_run_start_failed(
+        self, session_id: int, run_id: int, error: str
+    ) -> None:
+        await mark_run_start_failed(session_id, run_id, error)
 
 
 async def persist_event(
@@ -819,9 +349,12 @@ async def lifespan(app: FastAPI):
     app.state.dispatcher = RpcDispatcher(
         runtime, diff_service, artifact_store, broker, worktrees
     )
-    yield
-    await runtime.shutdown()
-    await engine.dispose()
+    try:
+        yield
+    finally:
+        await app.state.dispatcher.eval_scheduler.shutdown()
+        await runtime.shutdown()
+        await engine.dispose()
 
 
 app = FastAPI(title="Agent Workbench", lifespan=lifespan)

@@ -120,6 +120,28 @@ def test_phase_clock_uses_event_loop_clock(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_shutdown_joins_cancelled_scheduler_cleanup() -> None:
+    scheduler = EvalScheduler(None, None, None)
+    started = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    async def active_phase():
+        try:
+            started.set()
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            cleaned.set()
+
+    task = asyncio.create_task(active_phase())
+    scheduler._tasks[1] = task
+    await started.wait()
+    await scheduler.shutdown()
+    assert task.cancelled()
+    assert cleaned.is_set()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("suspend_gap", [False, True])
 async def test_scheduler_executes_scores_and_cleans_worktree(
     tmp_path, monkeypatch, suspend_gap

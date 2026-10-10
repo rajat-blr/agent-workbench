@@ -255,6 +255,10 @@ async def test_sqlite_dispatch_and_durable_events(tmp_path, monkeypatch) -> None
         "is_repository": False,
         "is_root": False,
         "branch": None,
+        "detached": False,
+        "files": [],
+        "remotes": [],
+        "index_token": None,
         "dirty_count": 0,
         "staged_count": 0,
         "unstaged_count": 0,
@@ -856,7 +860,7 @@ async def test_config_captures_workspace_instructions_and_verified_cli(
     from unittest.mock import AsyncMock
 
     monkeypatch.setattr(
-        "evals.service.detect_cli_version", AsyncMock(return_value="codex-cli 1.2.3")
+        "evals.configs.detect_cli_version", AsyncMock(return_value="codex-cli 1.2.3")
     )
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'capture.db'}")
     session_factory = async_sessionmaker(engine, expire_on_commit=False)

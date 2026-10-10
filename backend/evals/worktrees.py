@@ -5,6 +5,7 @@ import os
 import re
 import signal
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -68,10 +69,8 @@ class WorktreeService:
             )
         except TimeoutError as exc:
             if os.name != "nt":
-                try:
+                with suppress(ProcessLookupError):
                     os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
             else:
                 process.kill()
             await process.wait()
@@ -93,8 +92,10 @@ class WorktreeService:
             raise ValueError("Attempt ID must be positive")
         if not FULL_COMMIT_RE.fullmatch(base_sha):
             raise WorktreeError("Base commit must be a full Git commit SHA")
-        repository = Path(repository_path).expanduser().resolve()
-        if not repository.is_dir():
+        repository = await asyncio.to_thread(
+            lambda: Path(repository_path).expanduser().resolve()
+        )
+        if not await asyncio.to_thread(repository.is_dir):
             raise WorktreeError("Repository path does not exist")
         try:
             is_repository = await self._git(
@@ -104,7 +105,8 @@ class WorktreeService:
                 (await self._git(repository, "rev-parse", "--show-toplevel"))
                 .decode()
                 .strip()
-            ).resolve()
+            )
+            repository_root = await asyncio.to_thread(repository_root.resolve)
             resolved_sha = (
                 (await self._git(repository, "rev-parse", f"{base_sha}^{{commit}}"))
                 .decode()
@@ -171,25 +173,25 @@ class WorktreeService:
         retained = {path.resolve() for path in retained_paths}
         for candidate in self.root.glob("attempt-*"):
             path = candidate.resolve()
-            if not path.is_dir() or path in retained or not path.is_relative_to(
-                self.root
+            if (
+                not path.is_dir()
+                or path in retained
+                or not path.is_relative_to(self.root)
             ):
                 continue
             repository: Path | None = None
             try:
                 common_raw = (
-                    await self._git(path, "rev-parse", "--git-common-dir")
-                ).decode().strip()
+                    (await self._git(path, "rev-parse", "--git-common-dir"))
+                    .decode()
+                    .strip()
+                )
                 common = Path(common_raw)
                 if not common.is_absolute():
                     common = (path / common).resolve()
                 repository = common.parent if common.name == ".git" else common
-                base_sha = (
-                    await self._git(path, "rev-parse", "HEAD")
-                ).decode().strip()
-                await self.cleanup(
-                    ProvisionedWorktree(0, repository, path, base_sha)
-                )
+                base_sha = (await self._git(path, "rev-parse", "HEAD")).decode().strip()
+                await self.cleanup(ProvisionedWorktree(0, repository, path, base_sha))
             except WorktreeError:
                 quarantine = (
                     self.root / f"quarantine-{path.name}-{uuid.uuid4().hex[:8]}"

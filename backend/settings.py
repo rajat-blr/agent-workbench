@@ -8,13 +8,16 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./agent_workbench.db"
     artifact_directory: str | None = None
     eval_worktree_directory: str | None = None
+    eval_repository_directory: str | None = None
     codex_command: str = "codex"
     codex_model: str | None = None
     agent_sandbox: str = "workspace-write"
     codex_skip_git_repo_check: bool = False
     agent_timeout_seconds: int = 3600
     local_auth_token: str = ""
-    allowed_origins: str = "http://127.0.0.1:5173,http://localhost:5173,null,file://"
+    allowed_origins: str = (
+        "http://127.0.0.1:5173,http://localhost:5173,workbench://app,null,file://"
+    )
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -44,6 +47,12 @@ class Settings(BaseSettings):
         if raw_path == ":memory:":
             return Path("./artifacts").resolve()
         return Path(raw_path).expanduser().resolve().parent / "artifacts"
+
+    @property
+    def resolved_eval_repository_directory(self) -> Path:
+        if self.eval_repository_directory:
+            return Path(self.eval_repository_directory).expanduser().resolve()
+        return self.resolved_artifact_directory.parent / "eval-repositories"
 
     @property
     def resolved_eval_worktree_directory(self) -> Path:

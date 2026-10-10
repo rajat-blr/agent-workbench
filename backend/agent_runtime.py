@@ -183,7 +183,7 @@ class CodexAgentAdapter:
         try:
             process.stdin.write(prompt.encode())
             await process.stdin.drain()
-        except BrokenPipeError, ConnectionResetError:
+        except (BrokenPipeError, ConnectionResetError):
             await process.wait()
             raise RuntimeError("Codex exited before accepting the prompt") from None
         finally:
@@ -269,7 +269,7 @@ class AgentRuntimeManager:
             existing = self._agents.get(run_id)
             if existing and existing.process.returncode is None:
                 raise RuntimeError("This run is already active")
-            if not Path(workspace_path).is_dir():
+            if not await asyncio.to_thread(Path(workspace_path).is_dir):
                 raise ValueError("Workspace path must be an existing directory")
             agent_prompt = prompt + MAP_INSTRUCTIONS if mode == "map" else prompt
             raw_output_writer = (
@@ -365,14 +365,14 @@ class AgentRuntimeManager:
     def _terminate_process(
         self, process: asyncio.subprocess.Process, *, force: bool = False
     ) -> None:
-        if process.returncode is not None:
-            return
         if os.name != "nt":
             try:
                 os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
                 return
             except ProcessLookupError:
                 pass
+        if process.returncode is not None:
+            return
         if force:
             process.kill()
         else:
@@ -592,4 +592,8 @@ class AgentRuntimeManager:
             agent.watch_task for _run_id, agent in agents if agent.watch_task
         ]
         if watch_tasks:
+            _done, pending = await asyncio.wait(watch_tasks, timeout=5)
+            if pending:
+                for _run_id, agent in agents:
+                    self._terminate_process(agent.process, force=True)
             await asyncio.gather(*watch_tasks, return_exceptions=True)
